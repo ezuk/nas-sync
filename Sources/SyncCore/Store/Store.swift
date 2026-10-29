@@ -240,6 +240,7 @@ public enum StoreKey {
     public static func sourceFileCount(_ job: String) -> String { "sourceFileCount.\(job)" }
     public static func destFileCount(_ job: String) -> String { "destFileCount.\(job)" }
     public static func lastFullCheck(_ job: String) -> String { "lastFullCheck.\(job)" }
+    public static func fullCheckAttempt(_ job: String) -> String { "fullCheckAttempt.\(job)" }
     public static func lastResult(_ job: String) -> String { "lastResult.\(job)" }
     public static let githubJob = "GitHub repos"
 }

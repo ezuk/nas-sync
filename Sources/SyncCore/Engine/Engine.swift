@@ -26,8 +26,8 @@ public final class CancelFlag: @unchecked Sendable {
 public final class JobLock: @unchecked Sendable {
     private let fd: Int32
 
-    public init?(job: String) {
-        let dir = Store.defaultDirectory().appending(path: "locks")
+    public init?(job: String, directory: URL = Store.defaultDirectory()) {
+        let dir = directory.appending(path: "locks")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let safe = job.map { $0.isLetter || $0.isNumber ? $0 : "_" }
         let path = dir.appending(path: String(safe) + ".lock").path(percentEncoded: false)
@@ -44,6 +44,41 @@ public final class JobLock: @unchecked Sendable {
         flock(fd, LOCK_UN)
         close(fd)
     }
+}
+
+/// What the engine reads from the outside world. Tests swap in fakes.
+public struct EngineEnvironment: Sendable {
+    public var wifiName: @Sendable () -> String?
+    public var power: @Sendable () -> PowerState
+    public var findMount: @Sendable (NASConfig) -> NASMount.Mounted?
+    public var mount: @Sendable (NASConfig) -> Result<NASMount.Mounted, NASMount.Failure>
+    public var diagnose: @Sendable (NASConfig, String?, String) -> [NASMount.Step]
+    public var isOnShare: @Sendable (URL, NASConfig) -> Bool
+    public var unmount: @Sendable (NASMount.Mounted) -> Bool
+
+    public init(
+        wifiName: @escaping @Sendable () -> String?, power: @escaping @Sendable () -> PowerState,
+        findMount: @escaping @Sendable (NASConfig) -> NASMount.Mounted?,
+        mount: @escaping @Sendable (NASConfig) -> Result<NASMount.Mounted, NASMount.Failure>,
+        diagnose: @escaping @Sendable (NASConfig, String?, String) -> [NASMount.Step],
+        isOnShare: @escaping @Sendable (URL, NASConfig) -> Bool,
+        unmount: @escaping @Sendable (NASMount.Mounted) -> Bool
+    ) {
+        self.wifiName = wifiName
+        self.power = power
+        self.findMount = findMount
+        self.mount = mount
+        self.diagnose = diagnose
+        self.isOnShare = isOnShare
+        self.unmount = unmount
+    }
+
+    public static let live = EngineEnvironment(
+        wifiName: { WiFi.currentName() }, power: { PowerState.current() },
+        findMount: { NASMount.find($0) }, mount: { NASMount.mount($0) },
+        diagnose: { NASMount.diagnose($0, wifiName: $1, homeWiFi: $2) },
+        isOnShare: { NASMount.isOnShare($0, config: $1) }, unmount: { NASMount.unmount($0) }
+    )
 }
 
 /// Something worth a notification.
@@ -75,6 +110,9 @@ public final class Engine {
 
     public let configURL: URL
     public let store: Store
+    @ObservationIgnored let env: EngineEnvironment
+    /// Delay before a nightly check can start after launch, so startup catch-up runs first.
+    @ObservationIgnored var startupGrace: TimeInterval = 60
     @ObservationIgnored private let statusURL: URL
     @ObservationIgnored private var watchers: [String: FolderWatcher] = [:]
     @ObservationIgnored private var pending: [String: (scope: FolderSync.Scope, eventID: UInt64, count: Int)] = [:]
@@ -82,7 +120,12 @@ public final class Engine {
     @ObservationIgnored private var progress: [String: JobProgress] = [:]
     @ObservationIgnored private var lastRuns: [String: RunRecord] = [:]
     @ObservationIgnored private var runAnywayOnce: Set<String> = []
+    /// Failed jobs wait this long before retrying on their own.
+    @ObservationIgnored private var retryAfter: [String: Date] = [:]
+    static let failureBackoff: TimeInterval = 300
     @ObservationIgnored private var allowDeleteOnce: Set<String> = []
+    /// Jobs stopped by the mass-delete guard; they wait for the user before running again.
+    @ObservationIgnored private var awaitingDeleteConfirmation: Set<String> = []
     @ObservationIgnored private var mountedByApp = false
     @ObservationIgnored private var mounting = false
     @ObservationIgnored private var mountFailures = 0
@@ -109,9 +152,10 @@ public final class Engine {
     }
     static let mountRetry: TimeInterval = 300
 
-    public init(configURL: URL = ConfigLoader.defaultURL(), store: Store) {
+    public init(configURL: URL = ConfigLoader.defaultURL(), store: Store, environment: EngineEnvironment = .live) {
         self.configURL = configURL
         self.store = store
+        env = environment
         statusURL = SnapshotPaths.statusURL(store: store)
         status = .initial(configPath: configURL.path(percentEncoded: false))
         if let until = store.date("pausedUntil"), until > Date() { status.pausedUntil = until }
@@ -296,6 +340,11 @@ public final class Engine {
         evaluate()
     }
 
+    public func retry(job: String) {
+        retryAfter[job] = nil
+        evaluate()
+    }
+
     public func retryMount() {
         mountFailures = 0
         status.lastMountAttempt = nil
@@ -313,16 +362,16 @@ public final class Engine {
     public func evaluate() {
         let now = Date()
         if let until = status.pausedUntil, until <= now { resume(); return }
-        let power = PowerState.current()
+        let power = env.power()
         status.onBattery = power.onBattery
         status.batteryPercent = power.percent
         status.locationAllowed = locationAllowed
-        status.wifiName = WiFi.currentName()
+        status.wifiName = env.wifiName()
         let isHome = config.map { status.wifiName == $0.home.wifi } ?? false
         trackAway(isHome: isHome, now: now)
         status.isHome = isHome
 
-        if let config, let mounted = NASMount.find(config.nas) {
+        if let config, let mounted = env.findMount(config.nas) {
             if !status.nasMounted { mountRecovered(now: now) }
             status.nasMounted = true
             status.mountPoint = mounted.mountPoint.path(percentEncoded: false)
@@ -331,8 +380,8 @@ public final class Engine {
             status.mountPoint = nil
             if let config, isHome, status.pausedUntil == nil { mountIfNeeded(config, now: now) }
         }
-        if !isHome, mountedByApp, config?.nas.unmountWhenAway == true, let config, let m = NASMount.find(config.nas) {
-            if NASMount.unmount(m) { mountedByApp = false }
+        if !isHome, mountedByApp, config?.nas.unmountWhenAway == true, let config, let m = env.findMount(config.nas) {
+            if env.unmount(m) { mountedByApp = false }
         }
         if !isHome { status.mountError = nil; status.mountSteps = [] }
 
@@ -365,11 +414,11 @@ public final class Engine {
         if let last = status.lastMountAttempt, status.mountError != nil, now.timeIntervalSince(last) < Self.mountRetry { return }
         mounting = true
         status.lastMountAttempt = now
-        let nas = config.nas, wifi = status.wifiName, home = config.home.wifi
+        let nas = config.nas, wifi = status.wifiName, home = config.home.wifi, env = self.env
         Task.detached(priority: .utility) { [weak self] in
-            let result = NASMount.mount(nas)
+            let result = env.mount(nas)
             let steps: [NASMount.Step]
-            if case .failure = result { steps = NASMount.diagnose(nas, wifiName: wifi, homeWiFi: home) } else { steps = [] }
+            if case .failure = result { steps = env.diagnose(nas, wifi, home) } else { steps = [] }
             await MainActor.run { self?.mountFinished(result, steps: steps) }
         }
     }
@@ -418,19 +467,24 @@ public final class Engine {
 
     private func startDueJobs(_ config: AppConfig, mountPoint: URL, power: PowerState, now: Date) {
         // The destination must really be on the share, not a stale folder under /Volumes.
-        guard NASMount.isOnShare(mountPoint, config: config.nas) else {
+        guard env.isOnShare(mountPoint, config.nas) else {
             status.mountError = "The NAS folder isn't on the expected network share."
             return
         }
         for job in config.folders where running[job.name] == nil {
+            // Once per night, counting attempts so a blocked or failed check isn't repeated until the next night.
             let nightly = config.folderDefaults.nightlyCheck.lastOccurrence(atOrBefore: now)
-            if (store.date(StoreKey.lastFullCheck(job.name)) ?? .distantPast) < nightly, now.timeIntervalSince(started) > 60 || pending[job.name] == nil {
+            let lastFull = max(store.date(StoreKey.lastFullCheck(job.name)) ?? .distantPast, store.date(StoreKey.fullCheckAttempt(job.name)) ?? .distantPast)
+            if lastFull < nightly, now.timeIntervalSince(started) > startupGrace || pending[job.name] == nil {
                 queue(job.name, scope: .full, eventID: FolderWatcher.currentEventID)
             }
             guard let entry = pending[job.name] else { continue }
             if case .directories(let d) = entry.scope, d.isEmpty { pending[job.name] = nil; continue }
+            if let wait = retryAfter[job.name], wait > now, !runAnywayOnce.contains(job.name) { continue }
+            if awaitingDeleteConfirmation.contains(job.name), !runAnywayOnce.contains(job.name), !allowDeleteOnce.contains(job.name) { continue }
             guard batteryAllows(job.name, power: power, now: now) else { continue }
             pending[job.name] = nil
+            if entry.scope == .full { store.setDate(now, for: StoreKey.fullCheckAttempt(job.name)) }
             runFolder(job, mountPoint: mountPoint, scope: entry.scope, eventID: entry.eventID,
                       trigger: entry.scope == .full ? (runAnywayOnce.contains(job.name) ? "manual" : "full check") : "changes")
         }
@@ -469,7 +523,7 @@ public final class Engine {
         let startedAt = Date()
         evaluateSoon()
         Task.detached(priority: .utility) { [weak self] in
-            guard let lock = JobLock(job: name) else {
+            guard let lock = JobLock(job: name, directory: store.directory) else {
                 await MainActor.run { self?.finished(name, record: nil, requeue: scope) }
                 return
             }
@@ -496,7 +550,7 @@ public final class Engine {
         progress[name] = JobProgress(done: 0, total: 0, bytesDone: 0, bytesTotal: 0, current: "Finding repos", step: "check", changedSoFar: 0, started: startedAt)
         evaluateSoon()
         Task.detached(priority: .utility) { [weak self] in
-            guard let lock = JobLock(job: name) else {
+            guard let lock = JobLock(job: name, directory: store.directory) else {
                 await MainActor.run { self?.finished(name, record: nil, requeue: nil) }
                 return
             }
@@ -525,6 +579,8 @@ public final class Engine {
     private func finished(_ job: String, record: RunRecord?, requeue: FolderSync.Scope?) {
         running[job] = nil
         progress[job] = nil
+        if record?.outcome == .blocked, record?.summary.hasPrefix("Stopped:") == true { awaitingDeleteConfirmation.insert(job) } else if record != nil { awaitingDeleteConfirmation.remove(job) }
+        if record?.outcome == .failed { retryAfter[job] = Date().addingTimeInterval(Self.failureBackoff) } else { retryAfter[job] = nil }
         if let record {
             lastRuns[job] = record
             historyVersion += 1

@@ -161,7 +161,7 @@ case "run":
         let jobs = config.folders.filter { name == nil || $0.name == name }
         if jobs.isEmpty { fail("No folder job named \(name ?? "").") }
         for job in jobs {
-            guard let lock = JobLock(job: job.name) else { fail("\(job.name) is already running in the app.") }
+            guard let lock = JobLock(job: job.name, directory: store.directory) else { fail("\(job.name) is already running in the app.") }
             let r = FolderRunner.run(job: job, nasRoot: root, store: store,
                                      options: .init(trigger: "command line", scope: .full, dryRun: dryRun), isCancelled: { cancel.isCancelled })
             _ = lock
@@ -169,7 +169,7 @@ case "run":
         }
     case "github":
         guard let gh = config.github else { fail("There's no [github] section in the config.") }
-        guard let lock = JobLock(job: StoreKey.githubJob) else { fail("GitHub backups are already running in the app.") }
+        guard let lock = JobLock(job: StoreKey.githubJob, directory: store.directory) else { fail("GitHub backups are already running in the app.") }
         let backup = GitHubBackup(config: gh, destination: root.appending(path: gh.dest), store: store)
         let result = backup.run(trigger: "command line", dryRun: dryRun, isCancelled: { cancel.isCancelled }, progress: { p in
             if verbose { FileHandle.standardError.write(Data("[\(p.index + 1)/\(p.total)] \(p.repo): \(p.step.rawValue)\n".utf8)) }

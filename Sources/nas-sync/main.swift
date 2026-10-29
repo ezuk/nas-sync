@@ -33,6 +33,8 @@ func usage() {
       run folders [name] [--dry-run] [-v]
                                    compare and copy folder jobs now
       run github [--dry-run] [-v]  back up GitHub repos now
+      unpack <archive.bundle.xz> [out]
+                                   decompress a GitHub archive to a .bundle you can git clone
       count <folder> [--workers N] list a folder tree and time it (N=1 lists one folder at a time)
     """)
 }
@@ -117,6 +119,14 @@ case "diagnose":
         print("\(mark) \(step.title)\(step.detail.map { ": \($0)" } ?? "")")
     }
     if wifi == nil { print("(Wi-Fi name isn't visible to command-line tools, so the Wi-Fi step was assumed.)") }
+
+case "unpack":
+    guard args.count > 1 else { fail("usage: nas-sync unpack <archive.bundle.xz> [out]") }
+    let input = URL(filePath: (args[1] as NSString).expandingTildeInPath)
+    let name = input.lastPathComponent.hasSuffix(".xz") ? String(input.lastPathComponent.dropLast(3)) : input.lastPathComponent + ".out"
+    let output = args.count > 2 ? URL(filePath: (args[2] as NSString).expandingTildeInPath) : URL(filePath: FileManager.default.currentDirectoryPath).appending(path: name)
+    do { try XZ.decompress(input, to: output) } catch { fail("Couldn't unpack: \(error.localizedDescription)") }
+    print("Wrote \(output.path(percentEncoded: false)). Restore with: git clone \"\(output.lastPathComponent)\" <folder>")
 
 case "count":
     let workers = option("--workers").flatMap(Int.init) ?? 8

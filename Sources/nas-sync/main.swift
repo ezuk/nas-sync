@@ -20,6 +20,7 @@ let configURL = option("--config").map { URL(filePath: ($0 as NSString).expandin
 let stateDir = option("--state").map { URL(filePath: ($0 as NSString).expandingTildeInPath) }
 let dryRun = flag("--dry-run")
 let json = flag("--json")
+let allowMassDelete = flag("--allow-mass-delete")
 let verbose = flag("--verbose") || flag("-v")
 
 func usage() {
@@ -30,7 +31,7 @@ func usage() {
       status [--json]              show what the app is doing (reads the app's status file)
       mount                        mount the NAS share if needed
       diagnose                     run the NAS checklist step by step
-      run folders [name] [--dry-run] [-v]
+      run folders [name] [--dry-run] [-v] [--allow-mass-delete]
                                    compare and copy folder jobs now
       run github [--dry-run] [-v]  back up GitHub repos now
       unpack <archive.bundle.xz> [out]
@@ -163,7 +164,7 @@ case "run":
         for job in jobs {
             guard let lock = JobLock(job: job.name, directory: store.directory) else { fail("\(job.name) is already running in the app.") }
             let r = FolderRunner.run(job: job, nasRoot: root, store: store,
-                                     options: .init(trigger: "command line", scope: .full, dryRun: dryRun), isCancelled: { cancel.isCancelled })
+                                     options: .init(trigger: "command line", scope: .full, dryRun: dryRun, allowMassDelete: allowMassDelete), isCancelled: { cancel.isCancelled })
             _ = lock
             printRun(r)
         }

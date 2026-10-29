@@ -34,7 +34,7 @@ public enum StarterConfig {
         [[folder]]
         name = "Documents"
         source = "~/Documents"
-        dest = "Mac/Documents"           # folder on the NAS share
+        dest = "Mac/Documents"           # folder inside path on the NAS
         # exclude = ["**/node_modules"]  # added to the defaults
 
         # [github]

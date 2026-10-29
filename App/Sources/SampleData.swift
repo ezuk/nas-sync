@@ -24,7 +24,8 @@ enum SampleData {
     wifi = "Hearth"
 
     [nas]
-    url = "smb://nas.local/backup"   # password lives in Keychain
+    ssh = "me@nas.local"             # SSH login with your key
+    path = "/volume1/homes/me"       # every dest is inside this folder
 
     [folders]
     archive_days = 90                # keep deleted or replaced files this long
@@ -33,7 +34,7 @@ enum SampleData {
     [[folder]]
     name = "Tresorit"
     source = "/tmp"
-    dest = "Tresorit Backup"         # folder on the NAS share
+    dest = "Tresorit Backup"         # folder on the NAS
 
     [[folder]]
     name = "Documents"
@@ -99,7 +100,7 @@ enum SampleData {
                                             RunItem(action: .new, path: "Finance/2026/Invoices/INV-1043.pdf", size: 198_000),
                                             RunItem(action: .changed, path: "Work/Clients/2026/Q4 proposal.key", size: 31_400_000),
                                             RunItem(action: .changed, path: "Notes/Reading list.md", size: 6_000),
-                                            RunItem(action: .archived, path: "Work/Clients/2026/Q4 proposal (old).key", size: 29_800_000, detail: "Deleted in source, moved to _archive/2026-10-29/"),
+                                            RunItem(action: .archived, path: "Work/Clients/2026/Q4 proposal (old).key", size: 29_800_000, detail: "Deleted in source, moved to _archive/2026-10-29/185830"),
                                          ]))
         var w = RunCounts(); w.new = 40; w.skipped = 1; w.bytes = 120_000_000
         _ = try? store.saveRun(RunRecord(kind: .folder, job: "Tresorit", trigger: "changes", started: ago(220), finished: ago(219.5), outcome: .warning, counts: w,

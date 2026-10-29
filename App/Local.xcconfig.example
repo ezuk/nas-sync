@@ -1,0 +1,4 @@
+// Copy to Local.xcconfig (ignored by git) and set your own values.
+// Find your team ID in Xcode > Settings > Accounts, or at developer.apple.com.
+DEVELOPMENT_TEAM = YOURTEAMID
+PRODUCT_BUNDLE_IDENTIFIER = com.yourname.nas-sync

@@ -1,0 +1,397 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		311C3A1791243E415B229FCD /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D709324DE37B31B39AAC47E /* Components.swift */; };
+		34C9BEACFFFFCD50A79B26D2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A8BE15577E1F23156A87BB9C /* Assets.xcassets */; };
+		35B2B4063D569AE16CB6509F /* SyncCore in Frameworks */ = {isa = PBXBuildFile; productRef = A337358479BC0EF2B40B0CA7 /* SyncCore */; };
+		35E07C97A3E74D2A2185112E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBAE6B5BB598F5C799D2CFF7 /* SettingsView.swift */; };
+		3641DD8209533CBFFDA6D437 /* ReposView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49D02232187D5AFA29A2E7F /* ReposView.swift */; };
+		4F4D01481A5497FFFCB4689B /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C1751DD3A0432135546368A /* PopoverView.swift */; };
+		5CA7849E208E1ACF71D01EB4 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37B4213562BE4FC1309616C0 /* ActivityView.swift */; };
+		7F9AB3D202CC70A3ECC5661C /* NASSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE3064FB488DC7A8DD26F692 /* NASSyncApp.swift */; };
+		AA85D9B770049F817A658238 /* MenuBarIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7130EB69DB11B7D4EA8069 /* MenuBarIcon.swift */; };
+		ADDA866247338CC873447813 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6316AF044BF3F4269C8E49F8 /* AppModel.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		2C1751DD3A0432135546368A /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
+		37B4213562BE4FC1309616C0 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
+		6316AF044BF3F4269C8E49F8 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		7D2862073399FDFDB325CF4B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		9D709324DE37B31B39AAC47E /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		A8BE15577E1F23156A87BB9C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B2E81A0DC5F793122122EE8A /* nas-sync */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "nas-sync"; path = ..; sourceTree = SOURCE_ROOT; };
+		B49D02232187D5AFA29A2E7F /* ReposView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReposView.swift; sourceTree = "<group>"; };
+		CBAE6B5BB598F5C799D2CFF7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		DC7130EB69DB11B7D4EA8069 /* MenuBarIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarIcon.swift; sourceTree = "<group>"; };
+		E0131DBCE1D116C7E20E9910 /* NASSync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NASSync.entitlements; sourceTree = "<group>"; };
+		E8A0A5B0CC515DCB8A26AC60 /* NAS Sync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NAS Sync.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		FE3064FB488DC7A8DD26F692 /* NASSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NASSyncApp.swift; sourceTree = "<group>"; };
+		"TEMP_A74E3B6A-4B25-4010-9BE0-48BD1142FDAA" /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BB56EBE364541194C7E0245C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				35B2B4063D569AE16CB6509F /* SyncCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		7B9C42C42C56F1DA755FFC60 = {
+			isa = PBXGroup;
+			children = (
+				D09D0A9DC92D4993AD365D0B /* Packages */,
+				D5E81EB6F6F1BB465C6626B6 /* Resources */,
+				C5AABF4EEABEC9394B71E3B1 /* Sources */,
+				A73C7A2808C265A0D20795E3 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A73C7A2808C265A0D20795E3 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E8A0A5B0CC515DCB8A26AC60 /* NAS Sync.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C5AABF4EEABEC9394B71E3B1 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				37B4213562BE4FC1309616C0 /* ActivityView.swift */,
+				6316AF044BF3F4269C8E49F8 /* AppModel.swift */,
+				9D709324DE37B31B39AAC47E /* Components.swift */,
+				DC7130EB69DB11B7D4EA8069 /* MenuBarIcon.swift */,
+				FE3064FB488DC7A8DD26F692 /* NASSyncApp.swift */,
+				2C1751DD3A0432135546368A /* PopoverView.swift */,
+				B49D02232187D5AFA29A2E7F /* ReposView.swift */,
+				CBAE6B5BB598F5C799D2CFF7 /* SettingsView.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		D09D0A9DC92D4993AD365D0B /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				B2E81A0DC5F793122122EE8A /* nas-sync */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		D5E81EB6F6F1BB465C6626B6 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A8BE15577E1F23156A87BB9C /* Assets.xcassets */,
+				7D2862073399FDFDB325CF4B /* Info.plist */,
+				E0131DBCE1D116C7E20E9910 /* NASSync.entitlements */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		"TEMP_50EA96D0-D27A-444D-A7C3-C093A2EFBE33" /* App */ = {
+			isa = PBXGroup;
+			children = (
+				"TEMP_A74E3B6A-4B25-4010-9BE0-48BD1142FDAA" /* App.xcconfig */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		F8B4AE122510AB18C8DF5525 /* NAS Sync */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 008E2C960C29D8804C6E319D /* Build configuration list for PBXNativeTarget "NAS Sync" */;
+			buildPhases = (
+				16AE5B472BB517E24611E4E1 /* Sources */,
+				F2650EBD6A58E6B9051A9D1F /* Resources */,
+				BB56EBE364541194C7E0245C /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "NAS Sync";
+			packageProductDependencies = (
+				A337358479BC0EF2B40B0CA7 /* SyncCore */,
+			);
+			productName = "NAS Sync";
+			productReference = E8A0A5B0CC515DCB8A26AC60 /* NAS Sync.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		7EC63743576A644D3B39DE1D /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					F8B4AE122510AB18C8DF5525 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = CBF135BFA88D4BCBF5B748F5 /* Build configuration list for PBXProject "NASSync" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 7B9C42C42C56F1DA755FFC60;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				212A718EF741253A79AFA7FB /* XCLocalSwiftPackageReference ".." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A73C7A2808C265A0D20795E3 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				F8B4AE122510AB18C8DF5525 /* NAS Sync */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F2650EBD6A58E6B9051A9D1F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				34C9BEACFFFFCD50A79B26D2 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		16AE5B472BB517E24611E4E1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5CA7849E208E1ACF71D01EB4 /* ActivityView.swift in Sources */,
+				ADDA866247338CC873447813 /* AppModel.swift in Sources */,
+				311C3A1791243E415B229FCD /* Components.swift in Sources */,
+				AA85D9B770049F817A658238 /* MenuBarIcon.swift in Sources */,
+				7F9AB3D202CC70A3ECC5661C /* NASSyncApp.swift in Sources */,
+				4F4D01481A5497FFFCB4689B /* PopoverView.swift in Sources */,
+				3641DD8209533CBFFDA6D437 /* ReposView.swift in Sources */,
+				35E07C97A3E74D2A2185112E /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0099429A318E3151FF9DEFC4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/NASSync.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_NAME = "NAS Sync";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		844E5D2A5A22ED5806D19835 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = "TEMP_A74E3B6A-4B25-4010-9BE0-48BD1142FDAA" /* App.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		9391C2F78D1BB10FC6CFC467 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = "TEMP_A74E3B6A-4B25-4010-9BE0-48BD1142FDAA" /* App.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		F3D7AA36972F406A63CB95E7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Resources/NASSync.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_NAME = "NAS Sync";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		008E2C960C29D8804C6E319D /* Build configuration list for PBXNativeTarget "NAS Sync" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0099429A318E3151FF9DEFC4 /* Debug */,
+				F3D7AA36972F406A63CB95E7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CBF135BFA88D4BCBF5B748F5 /* Build configuration list for PBXProject "NASSync" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				844E5D2A5A22ED5806D19835 /* Debug */,
+				9391C2F78D1BB10FC6CFC467 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		212A718EF741253A79AFA7FB /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A337358479BC0EF2B40B0CA7 /* SyncCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SyncCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 7EC63743576A644D3B39DE1D /* Project object */;
+}

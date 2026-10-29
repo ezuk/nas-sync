@@ -61,7 +61,10 @@ public final class Store: @unchecked Sendable {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: "NAS Sync")
     }
 
+    public let directory: URL
+
     public init(directory: URL = Store.defaultDirectory()) throws {
+        self.directory = directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         db = try SQLiteDatabase(path: directory.appending(path: "state.sqlite").path(percentEncoded: false))
         try migrate()

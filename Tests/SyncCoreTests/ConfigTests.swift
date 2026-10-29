@@ -245,3 +245,43 @@ import Testing
         #expect(result.issues.first?.line == 2)
     }
 }
+
+@Suite struct StarterConfigTests {
+    @Test func starterConfigIsValid() {
+        let result = ConfigLoader.parse(StarterConfig.text(wifi: "Home \"5G\""))
+        #expect(result.errors.isEmpty, "\(result.issues)")
+        #expect(result.config?.home.wifi == "Home \"5G\"")
+        #expect(result.config?.github == nil)
+    }
+}
+
+@Suite struct ConfigEditorTests {
+    let base = """
+    [home]
+    wifi = "Home"
+
+    [nas]
+    url = "smb://nas.local/backup"
+
+    """
+
+    @Test func addsToSingleLineArray() throws {
+        let text = base + "[github]\nscan = []\nremote_only = [\"a/b\"]   # no clone\n"
+        let out = try ConfigEditor.addRemoteOnly("c/d", to: text)
+        #expect(out.contains("remote_only = [\"a/b\", \"c/d\"]   # no clone"))
+        #expect(try ConfigEditor.addRemoteOnly("c/d", to: out) == out)
+    }
+
+    @Test func addsToEmptyAndMultiLineArrays() throws {
+        let empty = try ConfigEditor.addRemoteOnly("c/d", to: base + "[github]\nremote_only = []\n")
+        #expect(empty.contains("remote_only = [\"c/d\"]"))
+        let multi = try ConfigEditor.addRemoteOnly("c/d", to: base + "[github]\nremote_only = [\n  \"a/b\"\n]\n\n[github.keep]\nmax = 6\n")
+        #expect(multi.contains("  \"a/b\",\n  \"c/d\",\n]"))
+    }
+
+    @Test func addsKeyWhenMissing() throws {
+        let out = try ConfigEditor.addRemoteOnly("c/d", to: base + "[github]\nscan = []\n\n[github.keep]\nmax = 6\n")
+        #expect(out.contains("scan = []\nremote_only = [\"c/d\"]\n\n[github.keep]"))
+        #expect(throws: ConfigEditor.EditError.self) { try ConfigEditor.addRemoteOnly("c/d", to: base) }
+    }
+}

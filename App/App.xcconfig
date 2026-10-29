@@ -1,0 +1,6 @@
+// Shared build settings. Signing lives in Local.xcconfig, which is not committed.
+// Copy Local.xcconfig.example to Local.xcconfig and fill in your own team ID.
+PRODUCT_BUNDLE_IDENTIFIER = org.example.nas-sync
+DEVELOPMENT_TEAM =
+CODE_SIGN_IDENTITY = Apple Development
+#include? "Local.xcconfig"

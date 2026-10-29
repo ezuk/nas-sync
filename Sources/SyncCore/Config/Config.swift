@@ -190,7 +190,7 @@ struct ConfigDecoder {
             nightlyCheck: fd.timeOfDay("nightly_check", default: TimeOfDay(hour: 3, minute: 0), in: &issues),
             maxDeletePercent: fd.int("max_delete_percent", default: 20, range: 1...100, in: &issues),
             maxDeleteFiles: fd.int("max_delete_files", default: 1000, range: 1...Int.max, in: &issues),
-            exclude: fd.stringList("exclude", default: [".DS_Store", "._*", ".Trash", ".Trashes", "Icon\r", "*.tmp", "~$*", ".TemporaryItems"], in: &issues)
+            exclude: fd.stringList("exclude", default: [".DS_Store", "._*", ".Trash", ".Trashes", "Icon\r", "*.tmp", "~$*", ".TemporaryItems", ".smbdelete*"], in: &issues)
         )
         finish(fd)
 

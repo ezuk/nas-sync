@@ -70,7 +70,10 @@ public struct FolderSync: Sendable {
         }
     }
 
-    public func plan(scope: Scope, isCancelled: () -> Bool = { false }) throws -> Plan {
+    /// Lists the NAS side in parallel before a full comparison.
+    public var prefetchDestination = true
+
+    public func plan(scope: Scope, isCancelled: @escaping @Sendable () -> Bool = { false }) throws -> Plan {
         var plan = Plan()
         plan.isFull = scope == .full
 
@@ -78,10 +81,12 @@ public struct FolderSync: Sendable {
         guard FileManager.default.fileExists(atPath: source.path(percentEncoded: false), isDirectory: &isDir), isDir.boolValue else {
             throw GuardError.sourceMissing(source.path(percentEncoded: false))
         }
-        let src = sourceLister, dst = destLister
+        let src = sourceLister
+        var dst = destLister
 
         switch scope {
         case .full:
+            if prefetchDestination { dst.cache = try dst.prefetch(isCancelled: isCancelled) }
             try compare("", recursive: true, src: src, dst: dst, plan: &plan, isCancelled: isCancelled)
         case .directories(let dirs):
             // Skip folders already covered by a recursive parent in the set.

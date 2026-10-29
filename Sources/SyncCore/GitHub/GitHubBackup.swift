@@ -70,7 +70,8 @@ public final class GitHubBackup: @unchecked Sendable {
     public func run(
         trigger: String, dryRun: Bool = false, now: Date = Date(),
         isCancelled: @escaping @Sendable () -> Bool = { false },
-        progress: @escaping @Sendable (Progress) -> Void = { _ in }
+        progress: @escaping @Sendable (Progress) -> Void = { _ in },
+        repoFinished: @escaping @Sendable (RepoResult) -> Void = { _ in }
     ) -> Result {
         var record = RunRecord(kind: .github, job: StoreKey.githubJob, trigger: dryRun ? "\(trigger), dry run" : trigger, started: now)
         let fm = FileManager.default
@@ -116,6 +117,7 @@ public final class GitHubBackup: @unchecked Sendable {
                 var result = try backUp(t, existing: existing, dryRun: dryRun, now: now, isCancelled: isCancelled, report: report, timings: &timings)
                 result.seconds = Date().timeIntervalSince(started)
                 results.append(result)
+                repoFinished(result)
             } catch is CancellationError {
                 record.outcome = .cancelled
                 break

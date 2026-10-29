@@ -200,6 +200,18 @@ enum SampleData {
         s.jobs = [job("Tresorit", .idle, last: ago(4), summary: "12 copied")]
         engine.showSample(s, lastGitHubRun: ghRun())
         render(ActivityView(), "1g-activity", width: 980, height: 600)
+
+        // Live runs in Activity: a full check comparing folders, repos backing up.
+        s = base(.syncing)
+        let comparing = JobProgress(done: 0, total: 0, bytesDone: 0, bytesTotal: 0, current: "", step: "comparing", changedSoFar: nil, started: ago(6),
+                                    folders: 3_400, foldersTotal: 9_434)
+        s.jobs = [job("Tresorit", .running, last: ago(120), summary: nil, progress: comparing),
+                  job(StoreKey.githubJob, .running, last: ago(1440), summary: nil, kind: .github,
+                      progress: JobProgress(done: 112, total: 171, bytesDone: 0, bytesTotal: 0, current: "acme/firmware", step: "compressing", changedSoFar: 5, started: ago(6)))]
+        engine.showSample(s, lastGitHubRun: ghRun())
+        render(ActivityView(), "1k-activity-live", width: 980, height: 600)
+        render(LiveRunView(job: s.jobs[0]).frame(width: 640), "1l-live-run", width: 640, height: 360)
+        render(PopoverView(), "1m-popover-comparing", width: 340)
         render(RunDetailView(run: ghRun()).frame(width: 720), "2d-github-run", width: 720, height: 560)
         render(ReposView(), "2e-repos", width: 1040, height: 360)
         render(ConfigPane().padding(24), "1h-settings-config", width: 720, height: 980)

@@ -34,7 +34,7 @@ public enum FolderRunner {
 
         let plan: FolderSync.Plan
         do {
-            plan = try sync.plan(scope: options.scope, isCancelled: isCancelled)
+            plan = try sync.plan(scope: options.scope, isCancelled: isCancelled, progress: progress)
             if !options.allowMassDelete {
                 try sync.checkMassDelete(plan, knownDestFileCount: store.int(StoreKey.destFileCount(job.name)))
             }

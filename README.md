@@ -86,6 +86,7 @@ git clone 260403-owner-repo.bundle repo
 ```sh
 swift run nas-sync validate                    # check the config
 swift run nas-sync status                      # what the app is doing (add --json for scripts)
+swift run nas-sync watch                       # follow the app live: status changes and finished runs
 swift run nas-sync run folders --dry-run       # show what a full check would copy and archive
 swift run nas-sync run folders --dry-run --allow-mass-delete -v   # list everything, even past the safety limits
 swift run nas-sync run github --dry-run -v     # show which repos would be backed up and why

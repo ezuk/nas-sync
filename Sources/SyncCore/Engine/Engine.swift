@@ -529,7 +529,8 @@ public final class Engine {
             }
             let record = FolderRunner.run(job: job, nasRoot: mountPoint, store: store, options: options, isCancelled: { flag.isCancelled }) { p in
                 let jp = JobProgress(done: p.done, total: p.total, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, current: p.current,
-                                     step: nil, changedSoFar: nil, started: startedAt)
+                                     step: p.phase.rawValue, changedSoFar: nil, started: startedAt,
+                                     folders: p.folders, foldersTotal: p.foldersTotal)
                 Task { @MainActor in self?.progress[name] = jp; self?.publishThrottled() }
             }
             _ = lock

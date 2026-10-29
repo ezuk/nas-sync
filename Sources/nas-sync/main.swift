@@ -29,6 +29,7 @@ func usage() {
 
       validate [file]              check the config file
       status [--json]              show what the app is doing (reads the app's status file)
+      watch [--every N]            print a line whenever the app's status changes, and each finished run
       mount                        mount the NAS share if needed
       diagnose                     run the NAS checklist step by step
       run folders [name] [--dry-run] [-v] [--allow-mass-delete]
@@ -104,6 +105,43 @@ case "status":
     }
     let age = Date().timeIntervalSince(s.updated)
     if age > 120 { print("\nStatus is \(Format.duration(age)) old; the app may not be running.") }
+
+case "watch":
+    let url = stateDir?.appending(path: "status.json") ?? StatusSnapshot.fileURL()
+    let every = option("--every").flatMap(Double.init) ?? 5
+    let store = openStore()
+    signal(SIGINT) { _ in exit(0) }
+    setvbuf(stdout, nil, _IOLBF, 0)
+    func stamp() -> String { Date().formatted(date: .omitted, time: .standard) }
+    func describe(_ r: RunRecord) -> String {
+        let when = r.duration.map { " in \(Format.duration($0))" } ?? ""
+        return "\(r.job) finished: \(r.outcome.rawValue). \(r.summary)\(when)"
+    }
+    var lastRunID = (try? store.recentRuns(limit: 1).first?.id) ?? 0
+    for r in ((try? store.recentRuns(limit: 3)) ?? []).reversed() {
+        print("[earlier] \(describe(r)) (\(StatusText.relative(r.finished ?? r.started, now: Date())))")
+    }
+    var lastHeadline = ""
+    var lastLines: [String: String] = [:]
+    var warnedStale = false
+    while true {
+        if let s = StatusSnapshot.read(from: url) {
+            let h = StatusText.headline(s)
+            let headline = "\(h.title). \(h.detail)"
+            if headline != lastHeadline { print("[\(stamp())] \(headline)"); lastHeadline = headline }
+            for j in s.jobs {
+                let line = "\(j.state.rawValue): \(StatusText.jobLine(j, showElapsed: false))"
+                if lastLines[j.name] != line { print("[\(stamp())]   \(j.name) · \(line)"); lastLines[j.name] = line }
+            }
+            let age = Date().timeIntervalSince(s.updated)
+            if age > 120, !warnedStale { print("[\(stamp())] Status is \(Format.duration(age)) old; the app may not be running."); warnedStale = true }
+            if age <= 120 { warnedStale = false }
+        }
+        let fresh = ((try? store.recentRuns(limit: 20)) ?? []).filter { ($0.id ?? 0) > (lastRunID ?? 0) }
+        for r in fresh.reversed() { print("[\(stamp())] \(describe(r))") }
+        if let top = fresh.first?.id { lastRunID = top }
+        Thread.sleep(forTimeInterval: every)
+    }
 
 case "mount":
     let config = loadConfig()

@@ -85,7 +85,10 @@ public struct FolderSync: Sendable {
     /// Lists the NAS side in parallel before a full comparison.
     public var prefetchDestination = true
 
-    public func plan(scope: Scope, isCancelled: @escaping @Sendable () -> Bool = { false }) throws -> Plan {
+    public func plan(
+        scope: Scope, isCancelled: @escaping @Sendable () -> Bool = { false },
+        progress: @escaping @Sendable (Progress) -> Void = { _ in }
+    ) throws -> Plan {
         var plan = Plan()
         plan.isFull = scope == .full
 
@@ -100,11 +103,23 @@ public struct FolderSync: Sendable {
         }
         let src = sourceLister
         var dst = destLister
+        var compared = 0
+        var folderTotal = 0
+        let tick = {
+            compared += 1
+            if compared % 100 == 0 { progress(Progress(phase: .comparing, folders: compared, foldersTotal: folderTotal)) }
+        }
 
         switch scope {
         case .full:
-            if prefetchDestination { dst.cache = try dst.prefetch(isCancelled: isCancelled) }
-            try compare("", recursive: true, src: src, dst: dst, plan: &plan, isCancelled: isCancelled)
+            if prefetchDestination {
+                progress(Progress(phase: .listing))
+                let cache = try dst.prefetch(isCancelled: isCancelled) { n in progress(Progress(phase: .listing, folders: n)) }
+                dst.cache = cache
+                folderTotal = cache.folderCount
+            }
+            progress(Progress(phase: .comparing, foldersTotal: folderTotal))
+            try compare("", recursive: true, src: src, dst: dst, plan: &plan, isCancelled: isCancelled, tick: tick)
         case .directories(let dirs):
             // Skip folders already covered by a recursive parent in the set.
             let recursiveRoots = dirs.filter(\.value).map(\.key)
@@ -114,7 +129,7 @@ public struct FolderSync: Sendable {
                 }
                 if coveredByParent { continue }
                 if src.exclude.matches(dir, isDirectory: true) { continue }
-                try compare(dir, recursive: recursive, src: src, dst: dst, plan: &plan, isCancelled: isCancelled)
+                try compare(dir, recursive: recursive, src: src, dst: dst, plan: &plan, isCancelled: isCancelled, tick: tick)
             }
         }
 
@@ -125,9 +140,11 @@ public struct FolderSync: Sendable {
     }
 
     private func compare(
-        _ dir: String, recursive: Bool, src: FileLister, dst: FileLister, plan: inout Plan, isCancelled: () -> Bool
+        _ dir: String, recursive: Bool, src: FileLister, dst: FileLister, plan: inout Plan, isCancelled: () -> Bool,
+        tick: () -> Void
     ) throws {
         if isCancelled() { throw CancellationError() }
+        tick()
         let srcEntries = try src.list(dir)
         let dstEntries = try dst.list(dir)
 
@@ -175,7 +192,7 @@ public struct FolderSync: Sendable {
             case .directory:
                 if let d, d.kind == .directory {
                     if recursive {
-                        try compare(s.relativePath, recursive: true, src: src, dst: dst, plan: &plan, isCancelled: isCancelled)
+                        try compare(s.relativePath, recursive: true, src: src, dst: dst, plan: &plan, isCancelled: isCancelled, tick: tick)
                     }
                 } else {
                     if let d {
@@ -254,11 +271,19 @@ public struct FolderSync: Sendable {
     // MARK: Executing
 
     public struct Progress: Sendable {
-        public var done: Int
-        public var total: Int
-        public var bytesDone: Int64
-        public var bytesTotal: Int64
-        public var current: String
+        public enum Phase: String, Sendable {
+            case listing, comparing, copying
+        }
+
+        public var phase: Phase = .copying
+        public var done = 0
+        public var total = 0
+        public var bytesDone: Int64 = 0
+        public var bytesTotal: Int64 = 0
+        public var current = ""
+        /// Folders listed or compared so far, before copying starts.
+        public var folders = 0
+        public var foldersTotal = 0
     }
 
     public struct Outcome: Sendable {

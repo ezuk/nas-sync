@@ -12,13 +12,19 @@ public struct JobProgress: Sendable, Codable, Equatable {
     public var bytesTotal: Int64
     /// File being copied, or repo being backed up.
     public var current: String
-    /// GitHub only: the pipeline step of the current repo.
+    /// GitHub: the pipeline step of the current repo. Folders: listing, comparing or copying.
     public var step: String?
+    /// Folders only: folders listed or compared so far, and the total once known.
+    public var folders: Int?
+    public var foldersTotal: Int?
     /// GitHub only: repos that needed a new archive so far.
     public var changedSoFar: Int?
     public var started: Date
 
-    public init(done: Int, total: Int, bytesDone: Int64, bytesTotal: Int64, current: String, step: String?, changedSoFar: Int?, started: Date) {
+    public init(done: Int, total: Int, bytesDone: Int64, bytesTotal: Int64, current: String, step: String?, changedSoFar: Int?, started: Date,
+                folders: Int? = nil, foldersTotal: Int? = nil) {
+        self.folders = folders
+        self.foldersTotal = foldersTotal
         self.done = done
         self.total = total
         self.bytesDone = bytesDone
@@ -31,7 +37,14 @@ public struct JobProgress: Sendable, Codable, Equatable {
 
     public var fraction: Double {
         if bytesTotal > 0 { return min(1, Double(bytesDone) / Double(bytesTotal)) }
-        return total > 0 ? min(1, Double(done) / Double(total)) : 0
+        if total > 0 { return min(1, Double(done) / Double(total)) }
+        if step == "comparing", let n = folders, let t = foldersTotal, t > 0 { return min(1, Double(n) / Double(t)) }
+        return 0
+    }
+
+    /// False while there's nothing to measure yet, such as while listing the NAS.
+    public var hasFraction: Bool {
+        total > 0 || bytesTotal > 0 || (step == "comparing" && (foldersTotal ?? 0) > 0)
     }
 }
 
@@ -241,7 +254,9 @@ public enum StatusText {
                 let detail = p.map { "Checked \($0.done) of \($0.total) · \($0.changedSoFar ?? 0) changed so far" } ?? "Starting"
                 return Headline(title: "Backing up GitHub repos", detail: detail)
             }
-            guard let p, p.total > 0 else { return Headline(title: "Checking \(job.name)", detail: "Comparing the folder with the NAS.") }
+            guard let p, p.total > 0 else {
+                return Headline(title: "Checking \(job.name)", detail: p.flatMap(scanText) ?? "Comparing the folder with the NAS.")
+            }
             return Headline(title: "Copying \(job.name) to the NAS",
                             detail: "\(p.done.formatted()) of \(Format.count(p.total, "changed file")) · \(Format.bytes(p.bytesDone)) of \(Format.bytes(p.bytesTotal))")
         case .error:
@@ -293,15 +308,33 @@ public enum StatusText {
         return dayAndTime(date, now: now)
     }
 
+    /// "Listing the NAS: 4,200 folders", "Comparing 1,300 of 9,434 folders", or nil once copying.
+    public static func scanText(_ p: JobProgress) -> String? {
+        switch p.step {
+        case "listing":
+            return p.folders.map { "Listing the NAS: \(Format.count($0, "folder"))" } ?? "Listing the NAS"
+        case "comparing":
+            let n = p.folders ?? 0
+            if let t = p.foldersTotal, t > 0 { return "Comparing \(min(n, t).formatted()) of \(Format.count(t, "folder"))" }
+            return "Comparing: \(Format.count(n, "folder"))"
+        default:
+            return nil
+        }
+    }
+
     /// Second line of a job row.
-    public static func jobLine(_ j: JobStatus, now: Date = Date()) -> String {
+    public static func jobLine(_ j: JobStatus, now: Date = Date(), showElapsed: Bool = true) -> String {
         switch j.state {
         case .running:
             if j.kind == .github, let p = j.progress {
                 return "\(p.current) · \(p.step ?? "checking")"
             }
             let started = j.progress.map { Format.duration(now.timeIntervalSince($0.started)) } ?? ""
-            return "Copying… started \(started) ago"
+            if let p = j.progress, let scan = scanText(p) { return showElapsed ? "\(scan) · started \(started) ago" : scan }
+            if let p = j.progress, p.total > 0 {
+                return "Copying \(p.done.formatted()) of \(Format.count(p.total, "file")) · \(Format.bytes(p.bytesDone)) of \(Format.bytes(p.bytesTotal))"
+            }
+            return showElapsed ? "Starting… \(started) ago" : "Starting"
         case .queued:
             return j.waitingChanges > 0 ? "Queued, \(Format.count(j.waitingChanges, "change")) seen" : "Queued"
         case .away, .paused:

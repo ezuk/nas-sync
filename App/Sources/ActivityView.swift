@@ -5,8 +5,13 @@ struct ActivityView: View {
     @Environment(AppModel.self) private var model
     @State private var filter: Filter = .all
     @State private var runs: [RunRecord] = []
-    @State private var selection: Int64?
+    @State private var selection: Selection?
     @State private var detail: RunRecord?
+
+    enum Selection: Hashable {
+        case run(Int64)
+        case live(String)
+    }
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All", folders = "Folders", repos = "Repos", problems = "Problems"
@@ -17,7 +22,13 @@ struct ActivityView: View {
         HSplitView {
             list.frame(minWidth: 260, idealWidth: 290, maxWidth: 380)
             Group {
-                if let detail { RunDetailView(run: detail) } else { emptyDetail }
+                if case .live(let name) = selection, let job = liveJobs.first(where: { $0.name == name }) {
+                    LiveRunView(job: job)
+                } else if let detail {
+                    RunDetailView(run: detail)
+                } else {
+                    emptyDetail
+                }
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
@@ -34,6 +45,11 @@ struct ActivityView: View {
         .onChange(of: model.engine.historyVersion) { load() }
         .onChange(of: filter) { load() }
         .onChange(of: selection) { loadDetail() }
+        .onChange(of: liveJobs.map(\.name)) { load() }
+    }
+
+    private var liveJobs: [JobStatus] {
+        model.engine.status.jobs.filter { $0.state == .running }
     }
 
     private var emptyDetail: some View {
@@ -53,12 +69,18 @@ struct ActivityView: View {
         var all = (try? model.engine.store.recentRuns(limit: 400, kinds: kinds)) ?? []
         if filter == .problems { all = all.filter { $0.outcome != .success && $0.outcome != .cancelled } }
         runs = all
-        if selection == nil || !all.contains(where: { $0.id == selection }) { selection = all.first?.id }
+        let valid: Bool = switch selection {
+        case .run(let id): all.contains { $0.id == id }
+        case .live(let name): liveJobs.contains { $0.name == name }
+        case nil: false
+        }
+        if !valid { selection = liveJobs.first.map { .live($0.name) } ?? all.first?.id.map { .run($0) } }
         loadDetail()
     }
 
     private func loadDetail() {
-        detail = selection.flatMap { try? model.engine.store.run(id: $0) }
+        guard case .run(let id) = selection else { detail = nil; return }
+        detail = try? model.engine.store.run(id: id)
     }
 
     private var grouped: [(String, [RunRecord])] {
@@ -76,18 +98,105 @@ struct ActivityView: View {
 
     private var list: some View {
         List(selection: $selection) {
+            if !liveJobs.isEmpty {
+                Section("Now") {
+                    ForEach(liveJobs, id: \.name) { job in
+                        LiveRunRow(job: job).tag(Selection.live(job.name))
+                    }
+                }
+            }
             ForEach(grouped, id: \.0) { day, items in
                 Section(day) {
                     ForEach(items) { run in
-                        RunRow(run: run).tag(run.id)
+                        RunRow(run: run).tag(run.id.map(Selection.run))
                     }
                 }
             }
         }
         .listStyle(.sidebar)
         .overlay {
-            if runs.isEmpty {
+            if runs.isEmpty, liveJobs.isEmpty {
                 Text(filter == .problems ? "No problems." : "Nothing has run yet.").foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// A job that is running right now, in the Activity list.
+struct LiveRunRow: View {
+    var job: JobStatus
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            StatusDot(color: Palette.blue).padding(.top, 5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(job.kind == .github ? "GitHub repos" : job.name).font(.system(size: 12.5, weight: .medium))
+                Text(StatusText.jobLine(job, showElapsed: false)).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// Live progress of a running job.
+struct LiveRunView: View {
+    @Environment(AppModel.self) private var model
+    var job: JobStatus
+
+    private var p: JobProgress? { job.progress }
+
+    private var fraction: Double? {
+        guard let p, p.hasFraction else { return nil }
+        return p.fraction
+    }
+
+    private var phase: String {
+        guard let p else { return "Starting" }
+        if job.kind == .github { return "Backing up repos" }
+        switch p.step {
+        case "listing": return "Listing the NAS"
+        case "comparing": return "Comparing with the NAS"
+        default: return p.total > 0 ? "Copying to the NAS" : "Finishing up"
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(job.kind == .github ? "GitHub repos" : job.name).font(.system(size: 20, weight: .semibold))
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        Text("\(phase) · started \(p.map { Format.duration(ctx.date.timeIntervalSince($0.started)) + " ago" } ?? "just now")")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let fraction { ProgressStrip(fraction: fraction) } else { ProgressView().progressViewStyle(.linear) }
+                HStack(spacing: 28) { kpis }
+                if let current = p?.current, !current.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(job.kind == .github ? "Current repo" : "Current file").font(.caption).foregroundStyle(.secondary)
+                        Text(current + (job.kind == .github ? p?.step.map { " · \($0)" } ?? "" : ""))
+                            .font(.system(size: 12.5, design: .monospaced)).lineLimit(2).truncationMode(.middle)
+                    }
+                }
+                Button("Stop") { model.engine.stop(job: job.name) }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder private var kpis: some View {
+        if let p {
+            if job.kind == .github {
+                KPI(value: "\(p.done.formatted()) of \(p.total.formatted())", label: "Repos checked")
+                KPI(value: (p.changedSoFar ?? 0).formatted(), label: "Backed up so far")
+            } else if p.total > 0 {
+                KPI(value: "\(p.done.formatted()) of \(p.total.formatted())", label: "Files copied")
+                KPI(value: "\(Format.bytes(p.bytesDone)) of \(Format.bytes(p.bytesTotal))", label: "Transferred")
+            } else if let n = p.folders {
+                KPI(value: p.foldersTotal.map { "\(n.formatted()) of \($0.formatted())" } ?? n.formatted(),
+                    label: p.step == "listing" ? "NAS folders listed" : "Folders compared")
             }
         }
     }

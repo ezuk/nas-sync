@@ -65,7 +65,7 @@ struct PopoverView: View {
                 Text(h.title).font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 Text(h.detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if status.state == .syncing, let job = status.runningJob, let p = job.progress {
-                    ProgressStrip(fraction: p.fraction).padding(.top, 5).padding(.bottom, 1)
+                    if p.hasFraction { ProgressStrip(fraction: p.fraction).padding(.top, 5).padding(.bottom, 1) }
                     if job.kind == .github {
                         Text("\(p.current) · \(stepLabel(p.step))").font(.system(size: 11, design: .monospaced)).lineLimit(1).truncationMode(.middle)
                         pipeline(p.step)

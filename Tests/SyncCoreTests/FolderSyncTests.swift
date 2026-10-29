@@ -75,6 +75,17 @@ final class TempPair {
         #expect(again.sourceFileCount == 3)
     }
 
+    @Test func reportsListingThenComparing() throws {
+        let t = try TempPair()
+        try t.write("a.txt", "A")
+        let sync = t.sync()
+        _ = sync.execute(try sync.plan(scope: .full))
+        let phases = LockedBox<[FolderSync.Progress.Phase]>([])
+        _ = try sync.plan(scope: .full, progress: { p in phases.set(phases.get() + [p.phase]) })
+        #expect(phases.get().first == .listing)
+        #expect(phases.get().last == .comparing)
+    }
+
     @Test func preservesModificationTime() throws {
         let t = try TempPair()
         let date = Date(timeIntervalSince1970: 1_700_000_000)

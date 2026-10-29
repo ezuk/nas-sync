@@ -90,7 +90,10 @@ public struct FileLister: Sendable {
     }
 
     /// Lists the whole tree with several folders in flight at once, which is much faster over SMB.
-    public func prefetch(workers: Int = 8, isCancelled: @escaping @Sendable () -> Bool = { false }) throws -> ListingCache {
+    public func prefetch(
+        workers: Int = 8, isCancelled: @escaping @Sendable () -> Bool = { false },
+        listed: @Sendable (Int) -> Void = { _ in }
+    ) throws -> ListingCache {
         let cache = ListingCache()
         let state = CrawlState()
         DispatchQueue.concurrentPerform(iterations: workers) { _ in
@@ -101,6 +104,8 @@ public struct FileLister: Sendable {
                     if isCancelled() { throw CancellationError() }
                     let entries = try listUncached(dir)
                     cache.set(dir, entries)
+                    let n = cache.folderCount
+                    if n % 100 == 0 { listed(n) }
                     found = entries?.filter { $0.kind == .directory }.map(\.relativePath) ?? []
                 } catch let e {
                     error = e

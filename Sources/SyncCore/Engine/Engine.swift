@@ -482,6 +482,7 @@ public final class Engine {
             if case .directories(let d) = entry.scope, d.isEmpty { pending[job.name] = nil; continue }
             if let wait = retryAfter[job.name], wait > now, !runAnywayOnce.contains(job.name) { continue }
             if awaitingDeleteConfirmation.contains(job.name), !runAnywayOnce.contains(job.name), !allowDeleteOnce.contains(job.name) { continue }
+            if entry.scope != .full, !runAnywayOnce.contains(job.name), let next = nextChangeSync(job), next > now { continue }
             guard batteryAllows(job.name, power: power, now: now) else { continue }
             pending[job.name] = nil
             if entry.scope == .full { store.setDate(now, for: StoreKey.fullCheckAttempt(job.name)) }
@@ -643,6 +644,12 @@ public final class Engine {
         status.state = overall(now: now)
     }
 
+    /// When collected changes may next be synced, if `at_most_every` is set.
+    private func nextChangeSync(_ job: FolderJobConfig) -> Date? {
+        guard job.atMostEvery.seconds > 0, let last = store.date(StoreKey.lastAttempt(job.name)) else { return nil }
+        return last.addingTimeInterval(job.atMostEvery.seconds)
+    }
+
     private func jobStatus(name: String, kind: JobStatus.Kind, staleAfter: TimeInterval, power: PowerState, now: Date) -> JobStatus {
         let last = lastRuns[name]
         let lastSuccess = store.date(StoreKey.lastSuccess(name))
@@ -658,6 +665,10 @@ public final class Engine {
             Schedule.isDue(lastSuccess: lastSuccess, every: $0.every, around: $0.around, now: now)
         } == true
         let hasWork = kind == .folder ? entry != nil : githubDue
+        if kind == .folder, let entry, entry.scope != .full, let job = config?.folders.first(where: { $0.name == name }),
+           let next = nextChangeSync(job), next > now {
+            j.nextRun = next
+        }
 
         if running[name] != nil {
             j.state = .running

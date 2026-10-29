@@ -336,7 +336,8 @@ public enum StatusText {
             }
             return showElapsed ? "Starting… \(started) ago" : "Starting"
         case .queued:
-            return j.waitingChanges > 0 ? "Queued, \(Format.count(j.waitingChanges, "change")) seen" : "Queued"
+            let next = j.nextRun.map { " · next sync at \(timeOnly($0, now: now))" } ?? ""
+            return (j.waitingChanges > 0 ? "Queued, \(Format.count(j.waitingChanges, "change")) seen" : "Queued") + next
         case .away, .paused:
             if j.kind == .github { return j.nextRun.map { $0 <= now ? "Due now" : "Next at \(timeOnly($0, now: now))" } ?? "Waiting" }
             return j.waitingChanges > 0 ? "\(Format.count(j.waitingChanges, "change")) waiting" : "Nothing waiting"

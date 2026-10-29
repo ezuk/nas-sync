@@ -149,6 +149,7 @@ import Testing
     source = "~/Documents"
     dest = "Mac/Docs"
     exclude = ["**/node_modules"]
+    at_most_every = "1h"
 
     [github]
     every = "6h"
@@ -178,6 +179,7 @@ import Testing
         #expect(folder.exclude.contains(".DS_Store"))
         #expect(folder.exclude.contains("**/node_modules"))
         #expect(folder.line == 13)
+        #expect(folder.atMostEvery == .hours(1))
         let gh = try #require(config.github)
         #expect(gh.every == .hours(6))
         #expect(gh.scan.first?.path == "/home/test/Code")

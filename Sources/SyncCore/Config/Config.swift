@@ -32,6 +32,8 @@ public struct FolderDefaults: Sendable, Equatable {
     public var archiveDays: Int
     public var staleAfter: Interval
     public var quietPeriod: Interval
+    /// Change-driven syncs start at most this often. Zero means no limit.
+    public var atMostEvery = Interval(seconds: 0)
     public var nightlyCheck: TimeOfDay
     public var maxDeletePercent: Int
     public var maxDeleteFiles: Int
@@ -50,6 +52,8 @@ public struct FolderJobConfig: Sendable, Equatable, Identifiable {
     public var maxDeletePercent: Int
     public var maxDeleteFiles: Int
     public var line: Int
+    /// Change-driven syncs start at most this often. Zero means no limit.
+    public var atMostEvery = Interval(seconds: 0)
 
     public var id: String { name }
     public var excludeSet: GlobSet { GlobSet(exclude) }
@@ -187,6 +191,7 @@ struct ConfigDecoder {
             archiveDays: fd.int("archive_days", default: 90, range: 1...36500, in: &issues),
             staleAfter: fd.interval("stale_after", default: .hours(24), in: &issues),
             quietPeriod: fd.interval("quiet_period", default: Interval(seconds: 30), in: &issues),
+            atMostEvery: fd.interval("at_most_every", default: Interval(seconds: 0), in: &issues),
             nightlyCheck: fd.timeOfDay("nightly_check", default: TimeOfDay(hour: 3, minute: 0), in: &issues),
             maxDeletePercent: fd.int("max_delete_percent", default: 20, range: 1...100, in: &issues),
             maxDeleteFiles: fd.int("max_delete_files", default: 1000, range: 1...Int.max, in: &issues),
@@ -210,7 +215,8 @@ struct ConfigDecoder {
                 quietPeriod: item.interval("quiet_period", default: defaults.quietPeriod, in: &issues),
                 maxDeletePercent: item.int("max_delete_percent", default: defaults.maxDeletePercent, range: 1...100, in: &issues),
                 maxDeleteFiles: item.int("max_delete_files", default: defaults.maxDeleteFiles, range: 1...Int.max, in: &issues),
-                line: item.table.line
+                line: item.table.line,
+                atMostEvery: item.interval("at_most_every", default: defaults.atMostEvery, in: &issues)
             )
             if !sourceText.isEmpty, !sourceText.hasPrefix("/"), !sourceText.hasPrefix("~") {
                 issue(item.line("source"), "folder '\(name)': source must be a full path or start with ~.")

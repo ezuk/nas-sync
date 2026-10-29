@@ -22,6 +22,7 @@ public enum StarterConfig {
         archive_days = 90                # keep deleted or replaced files this long
         stale_after = "24h"              # warn if no success for this long while home
         quiet_period = "30s"             # wait for changes to settle before copying
+        # at_most_every = "1h"           # sync changes at most this often (default: as they happen)
         nightly_check = "03:00"          # compare everything once a day
         max_delete_percent = 20          # stop if a run would archive more than this...
         max_delete_files = 1000          # ...or this many files

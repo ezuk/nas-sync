@@ -10,7 +10,7 @@ private final class FakeWorld: @unchecked Sendable {
     let mountWorks = LockedBox(true)
     let mounted = LockedBox(true)
 
-    init() throws {
+    init(folderSettings: String = "") throws {
         root = FileManager.default.temporaryDirectory.appending(path: "nassync-engine-\(UUID().uuidString)")
         for dir in [source, nas.appending(path: "Backup"), state] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -29,6 +29,7 @@ private final class FakeWorld: @unchecked Sendable {
         [folders]
         quiet_period = "1s"
         nightly_check = "\(nightly)"
+        \(folderSettings)
 
         [[folder]]
         name = "Docs"
@@ -108,6 +109,29 @@ private func makeEngine(_ world: FakeWorld) throws -> Engine {
         try world.write("sub/b.txt", "B")
         await waitUntil { world.nasFile("sub/b.txt") == "B" }
         #expect(world.nasFile("sub/b.txt") == "B")
+    }
+
+    @Test func syncsChangesAtMostEveryInterval() async throws {
+        let world = try FakeWorld(folderSettings: "at_most_every = \"1h\"")
+        try world.write("a.txt", "A")
+        let engine = try makeEngine(world)
+        engine.start()
+        defer { engine.stop() }
+
+        await waitUntil { world.nasFile("a.txt") == "A" && engine.status.state == .upToDate }
+        try world.write("b.txt", "B")
+        await waitUntil { engine.status.jobs.first?.state == .queued }
+        await waitUntil(2) { false }
+        #expect(world.nasFile("b.txt") == nil)
+        let job = try #require(engine.status.jobs.first)
+        #expect(job.state == .queued)
+        #expect(job.nextRun.map { $0.timeIntervalSinceNow > 3000 } == true)
+        #expect(StatusText.jobLine(job).contains("next sync at"))
+        #expect(engine.status.state == .upToDate)
+
+        engine.syncFoldersNow()
+        await waitUntil { world.nasFile("b.txt") == "B" }
+        #expect(world.nasFile("b.txt") == "B")
     }
 
     @Test func waitsWhileAwayAndCatchesUpAtHome() async throws {

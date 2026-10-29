@@ -3,17 +3,29 @@ import Testing
 @testable import SyncCore
 
 @Suite struct EnvironmentTests {
-    let nas = NASConfig(url: URL(string: "smb://MyNAS._smb._tcp.local/home")!, unmountWhenAway: false)
+    @Test func quotesForTheRemoteShell() {
+        #expect(NAS.quote("plain") == "'plain'")
+        #expect(NAS.quote("it's here") == "'it'\\''s here'")
+    }
 
-    @Test func matchesMountSources() {
-        #expect(NASMount.matches(from: "//user@MyNAS._smb._tcp.local/home", config: nas))
-        #expect(NASMount.matches(from: "//user@mynas.local/Home", config: nas))
-        #expect(NASMount.matches(from: "//MYNAS/home", config: nas))
-        #expect(!NASMount.matches(from: "//user@mynas.local/media", config: nas))
-        #expect(!NASMount.matches(from: "//user@other.local/home", config: nas))
-        let spaced = NASConfig(url: URL(string: "smb://nas.local/My%20Files")!, unmountWhenAway: false)
-        #expect(spaced.share == "My Files")
-        #expect(NASMount.matches(from: "//u@nas.local/My%20Files", config: spaced))
+    @Test(.enabled(if: Rsync.find() != nil)) func localNASFileOperations() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "nassync-nas-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nas = NAS(config: NASConfig(ssh: nil, path: root.path(percentEncoded: false)))
+        guard case .success = nas.check() else { Issue.record("local NAS check failed"); return }
+        #expect(nas.rsyncTarget("a b") == root.path(percentEncoded: false) + "/a b")
+
+        try nas.write(Data("hello".utf8), to: "x/y/file.txt")
+        let tree = try #require(try nas.listTree("x"))
+        #expect(tree.contains { $0.path == "y/file.txt" && $0.size == 5 && !$0.isDirectory })
+        #expect(tree.contains { $0.path == "y" && $0.isDirectory })
+        #expect(try nas.listTree("missing") == nil)
+        try nas.remove(["x/y"])
+        #expect(try nas.listTree("x")?.isEmpty == true)
+
+        let missing = NAS(config: NASConfig(ssh: nil, path: root.appending(path: "nope").path(percentEncoded: false)))
+        guard case .failure(.pathMissing) = missing.check() else { Issue.record("expected pathMissing"); return }
     }
 
     @Test func batteryRule() {

@@ -129,7 +129,8 @@ private final class GitSandbox {
     }
 
     func backup(_ config: GitHubConfig, store: Store) -> GitHubBackup {
-        let b = GitHubBackup(config: config, destination: nas, store: store, workDirectory: work)
+        let remote = NAS(config: NASConfig(ssh: nil, path: root.appending(path: "nas").path(percentEncoded: false)))
+        let b = GitHubBackup(config: config, nas: remote, store: store, workDirectory: work)
         b.checksGitHub = false
         return b
     }

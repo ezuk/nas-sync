@@ -156,6 +156,7 @@ struct LiveRunView: View {
         switch p.step {
         case "listing": return "Listing the NAS"
         case "comparing": return "Comparing with the NAS"
+        case "archiving": return "Moving old files to the archive"
         default: return p.total > 0 ? "Copying to the NAS" : "Finishing up"
         }
     }
@@ -194,9 +195,6 @@ struct LiveRunView: View {
             } else if p.total > 0 {
                 KPI(value: "\(p.done.formatted()) of \(p.total.formatted())", label: "Files copied")
                 KPI(value: "\(Format.bytes(p.bytesDone)) of \(Format.bytes(p.bytesTotal))", label: "Transferred")
-            } else if let n = p.folders {
-                KPI(value: p.foldersTotal.map { "\(n.formatted()) of \($0.formatted())" } ?? n.formatted(),
-                    label: p.step == "listing" ? "NAS folders listed" : "Folders compared")
             }
         }
     }
@@ -211,7 +209,7 @@ struct RunRow: View {
         case .away:
             let end = run.finished.map { " – " + $0.formatted(date: .omitted, time: .shortened) } ?? ""
             return "\(time)\(end) · Away"
-        case .mount: return "\(time) · Mount"
+        case .mount: return "\(time) · Connection"
         case .check: return "\(time) · Full check · \(run.job)"
         case .github: return "\(time) · GitHub repos"
         default: return "\(time) · \(run.job)"
@@ -247,7 +245,7 @@ struct RunDetailView: View {
         switch run.kind {
         case .github: "GitHub repos → NAS"
         case .away: "Away from home"
-        case .mount: "Mounting the NAS"
+        case .mount: "Connecting to the NAS"
         case .check: "\(run.job) → NAS (full check)"
         default: "\(run.job) → NAS"
         }
@@ -440,9 +438,9 @@ struct RunDetailView: View {
                 if remaining > 0 || showAll { dot }
                 Button(showTimings ? "Hide step timings" : "Step timings") { showTimings.toggle() }.buttonStyle(.link)
             }
-            if let revealPath, model.engine.status.nasMounted {
+            if let revealPath, model.engine.nas != nil {
                 if remaining > 0 || showAll || (run.kind == .github && !run.stepTimings.isEmpty) { dot }
-                Button("Reveal on NAS") { model.revealOnNAS(revealPath) }.buttonStyle(.link)
+                Button("Copy NAS Path") { model.copyNASPath(revealPath) }.buttonStyle(.link)
             }
         }
         .font(.system(size: 12))

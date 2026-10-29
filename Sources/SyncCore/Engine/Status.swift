@@ -12,19 +12,13 @@ public struct JobProgress: Sendable, Codable, Equatable {
     public var bytesTotal: Int64
     /// File being copied, or repo being backed up.
     public var current: String
-    /// GitHub: the pipeline step of the current repo. Folders: listing, comparing or copying.
+    /// GitHub: the pipeline step of the current repo. Folders: comparing or copying.
     public var step: String?
-    /// Folders only: folders listed or compared so far, and the total once known.
-    public var folders: Int?
-    public var foldersTotal: Int?
     /// GitHub only: repos that needed a new archive so far.
     public var changedSoFar: Int?
     public var started: Date
 
-    public init(done: Int, total: Int, bytesDone: Int64, bytesTotal: Int64, current: String, step: String?, changedSoFar: Int?, started: Date,
-                folders: Int? = nil, foldersTotal: Int? = nil) {
-        self.folders = folders
-        self.foldersTotal = foldersTotal
+    public init(done: Int, total: Int, bytesDone: Int64, bytesTotal: Int64, current: String, step: String?, changedSoFar: Int?, started: Date) {
         self.done = done
         self.total = total
         self.bytesDone = bytesDone
@@ -38,13 +32,12 @@ public struct JobProgress: Sendable, Codable, Equatable {
     public var fraction: Double {
         if bytesTotal > 0 { return min(1, Double(bytesDone) / Double(bytesTotal)) }
         if total > 0 { return min(1, Double(done) / Double(total)) }
-        if step == "comparing", let n = folders, let t = foldersTotal, t > 0 { return min(1, Double(n) / Double(t)) }
         return 0
     }
 
-    /// False while there's nothing to measure yet, such as while listing the NAS.
+    /// False while there's nothing to measure yet, such as while comparing with the NAS.
     public var hasFraction: Bool {
-        total > 0 || bytesTotal > 0 || (step == "comparing" && (foldersTotal ?? 0) > 0)
+        total > 0 || bytesTotal > 0
     }
 }
 
@@ -120,11 +113,12 @@ public struct StatusSnapshot: Sendable, Codable, Equatable {
     public var homeWiFi: String?
     public var isHome: Bool
     public var locationAllowed: Bool
-    public var nasMounted: Bool
-    public var mountPoint: String?
-    public var mountSteps: [NASMount.Step]
-    public var mountError: String?
-    public var lastMountAttempt: Date?
+    public var nasConnected: Bool
+    /// `user@host:/path`, or a local path.
+    public var nasLocation: String?
+    public var connectSteps: [NASCheck.Step]
+    public var connectError: String?
+    public var lastConnectCheck: Date?
     public var onBattery: Bool
     public var batteryPercent: Int?
     public var holdBelowPercent: Int
@@ -140,8 +134,8 @@ public struct StatusSnapshot: Sendable, Codable, Equatable {
     public var updated: Date
 
     public static func initial(configPath: String) -> StatusSnapshot {
-        StatusSnapshot(state: .starting, wifiName: nil, homeWiFi: nil, isHome: false, locationAllowed: false, nasMounted: false,
-                       mountPoint: nil, mountSteps: [], mountError: nil, lastMountAttempt: nil, onBattery: false, batteryPercent: nil,
+        StatusSnapshot(state: .starting, wifiName: nil, homeWiFi: nil, isHome: false, locationAllowed: false, nasConnected: false,
+                       nasLocation: nil, connectSteps: [], connectError: nil, lastConnectCheck: nil, onBattery: false, batteryPercent: nil,
                        holdBelowPercent: 30, pausedUntil: nil, configPath: configPath, configValid: false, configIssues: [],
                        usingLastGoodConfig: false, jobs: [], github: nil, notificationsAllowed: true, updated: Date())
     }
@@ -260,10 +254,10 @@ public enum StatusText {
             return Headline(title: "Copying \(job.name) to the NAS",
                             detail: "\(p.done.formatted()) of \(Format.count(p.total, "changed file")) · \(Format.bytes(p.bytesDone)) of \(Format.bytes(p.bytesTotal))")
         case .error:
-            if !s.nasMounted, s.mountError != nil {
+            if !s.nasConnected, s.connectError != nil {
                 let last = s.jobs.compactMap(\.lastSuccess).max()
                 return Headline(title: "Can't reach the NAS",
-                                detail: "You're home, but the backup share couldn't be mounted. Nothing has been backed up since \(last.map { inSentence($0, now: now) } ?? "the app started").")
+                                detail: "You're home, but the NAS didn't answer. Nothing has been backed up since \(last.map { inSentence($0, now: now) } ?? "the app started").")
             }
             if !s.configValid, !s.usingLastGoodConfig {
                 return Headline(title: "The config file has problems", detail: s.configIssues.first ?? "Open Settings to see what's wrong.")
@@ -308,18 +302,9 @@ public enum StatusText {
         return dayAndTime(date, now: now)
     }
 
-    /// "Listing the NAS: 4,200 folders", "Comparing 1,300 of 9,434 folders", or nil once copying.
+    /// "Comparing with the NAS", or nil once copying.
     public static func scanText(_ p: JobProgress) -> String? {
-        switch p.step {
-        case "listing":
-            return p.folders.map { "Listing the NAS: \(Format.count($0, "folder"))" } ?? "Listing the NAS"
-        case "comparing":
-            let n = p.folders ?? 0
-            if let t = p.foldersTotal, t > 0 { return "Comparing \(min(n, t).formatted()) of \(Format.count(t, "folder"))" }
-            return "Comparing: \(Format.count(n, "folder"))"
-        default:
-            return nil
-        }
+        p.step == "comparing" ? "Comparing with the NAS" : nil
     }
 
     /// Second line of a job row.

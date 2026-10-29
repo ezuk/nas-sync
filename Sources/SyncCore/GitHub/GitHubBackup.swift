@@ -36,8 +36,9 @@ public final class GitHubBackup: @unchecked Sendable {
     }
 
     public let config: GitHubConfig
-    /// `<NAS mount>/<github.dest>`
-    public let destination: URL
+    public let nas: NAS
+    /// Folder for GitHub backups, relative to the NAS base folder.
+    public let dest: String
     public let store: Store
     public let workDirectory: URL
     public let git: Git
@@ -48,9 +49,10 @@ public final class GitHubBackup: @unchecked Sendable {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "NAS Sync")
     }
 
-    public init(config: GitHubConfig, destination: URL, store: Store, workDirectory: URL = GitHubBackup.defaultWorkDirectory(), git: Git = Git()) {
+    public init(config: GitHubConfig, nas: NAS, store: Store, workDirectory: URL = GitHubBackup.defaultWorkDirectory(), git: Git = Git()) {
         self.config = config
-        self.destination = destination
+        self.nas = nas
+        dest = config.dest
         self.store = store
         self.workDirectory = workDirectory
         self.git = git
@@ -58,12 +60,16 @@ public final class GitHubBackup: @unchecked Sendable {
 
     var tempDirectory: URL { workDirectory.appending(path: "work") }
     var mirrorDirectory: URL { workDirectory.appending(path: "mirrors") }
-    var bundlesDirectory: URL { destination.appending(path: "bundles") }
-    var reportsDirectory: URL { destination.appending(path: "reports") }
+    var bundlesDirectory: String { "\(dest)/bundles" }
+    var reportsDirectory: String { "\(dest)/reports" }
 
-    func repoFolder(_ t: RepoTarget) -> URL {
-        bundlesDirectory.appending(path: config.group(forOwner: t.owner)).appending(path: t.name)
+    /// `<group>/<repo>` inside the bundles folder.
+    func repoFolder(_ t: RepoTarget) -> String {
+        "\(config.group(forOwner: t.owner))/\(t.name)"
     }
+
+    /// Archives on the NAS by repo folder, read once per run.
+    private let archiveIndex = LockedBox<[String: [ArchiveFile]]>([:])
 
     // MARK: Run
 
@@ -76,11 +82,13 @@ public final class GitHubBackup: @unchecked Sendable {
         var record = RunRecord(kind: .github, job: StoreKey.githubJob, trigger: dryRun ? "\(trigger), dry run" : trigger, started: now)
         let fm = FileManager.default
 
-        guard fm.fileExists(atPath: destination.deletingLastPathComponent().path(percentEncoded: false)) else {
+        do {
+            try loadArchiveIndex()
+        } catch {
             record.outcome = .blocked
             record.finished = Date()
-            record.summary = "NAS folder not found"
-            record.message = "The NAS folder for GitHub backups isn't available. Nothing was changed."
+            record.summary = "NAS not available"
+            record.message = "Couldn't read the GitHub backups folder on the NAS (\(error)). Nothing was changed."
             return Result(record: record, repos: [], newRepos: [])
         }
         try? fm.removeItem(at: tempDirectory)
@@ -236,17 +244,16 @@ public final class GitHubBackup: @unchecked Sendable {
             _ = try git.run(["bundle", "verify", "--quiet", bundle.path(percentEncoded: false)], in: repoDir, isCancelled: isCancelled)
         }
         try timed(.compressing) { try XZ.compress(bundle, to: compressed, isCancelled: isCancelled) }
-        let size = try timed(.copying) { try copyToNAS(compressed, folder: folder, name: name) }
+        let size = try timed(.copying) { try copyToNAS(compressed, folder: folder, name: name, isCancelled: isCancelled) }
 
         var pruned: [String] = []
         try timed(.pruning) {
             let all = listArchives(folder)
             if record.status == .ok {
                 let (_, delete) = Retention.apply(all, policy: config.keep, now: now)
-                for a in delete {
-                    try FileManager.default.removeItem(at: folder.appending(path: a.name))
-                    pruned.append(a.name)
-                }
+                try nas.remove(delete.map { "\(bundlesDirectory)/\(folder)/\($0.name)" })
+                pruned = delete.map(\.name)
+                archiveIndex.update { $0[folder]?.removeAll { a in pruned.contains(a.name) } }
             }
         }
 
@@ -366,14 +373,19 @@ public final class GitHubBackup: @unchecked Sendable {
 
     // MARK: NAS
 
-    func listArchives(_ folder: URL) -> [ArchiveFile] {
-        let items = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey])) ?? []
-        return items.compactMap { url in
-            let name = url.lastPathComponent
-            guard name.hasSuffix(ArchiveNaming.suffix), let date = ArchiveNaming.date(fromName: name) else { return nil }
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-            return ArchiveFile(name: name, date: date, size: size)
-        }.sorted { $0.date > $1.date }
+    /// Reads every archive under the bundles folder in one listing.
+    func loadArchiveIndex() throws {
+        var index: [String: [ArchiveFile]] = [:]
+        for e in try nas.listTree(bundlesDirectory) ?? [] where !e.isDirectory {
+            let name = (e.path as NSString).lastPathComponent
+            guard name.hasSuffix(ArchiveNaming.suffix), let date = ArchiveNaming.date(fromName: name) else { continue }
+            index[(e.path as NSString).deletingLastPathComponent, default: []].append(ArchiveFile(name: name, date: date, size: e.size))
+        }
+        archiveIndex.set(index)
+    }
+
+    func listArchives(_ folder: String) -> [ArchiveFile] {
+        (archiveIndex.get()[folder] ?? []).sorted { $0.date > $1.date }
     }
 
     func refreshArchives(_ record: inout RepoRecord, _ archives: [ArchiveFile]) {
@@ -392,28 +404,15 @@ public final class GitHubBackup: @unchecked Sendable {
         }
     }
 
-    /// Copies under a temp name, renames into place, then checks size and checksum.
-    func copyToNAS(_ file: URL, folder: URL, name: String) throws -> Int64 {
-        let fm = FileManager.default
-        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-        for leftover in (try? fm.contentsOfDirectory(atPath: folder.path(percentEncoded: false))) ?? [] where leftover.hasPrefix(FolderSync.tempPrefix) {
-            try? fm.removeItem(at: folder.appending(path: leftover))
+    /// Uploads under a temporary name, renames into place, then checks the checksum.
+    func copyToNAS(_ file: URL, folder: String, name: String, isCancelled: @Sendable () -> Bool) throws -> Int64 {
+        let size = try nas.upload(file, to: "\(bundlesDirectory)/\(folder)/\(name)", isCancelled: isCancelled)
+        let date = ArchiveNaming.date(fromName: name) ?? Date()
+        archiveIndex.update { index in
+            index[folder, default: []].removeAll { $0.name == name }
+            index[folder, default: []].append(ArchiveFile(name: name, date: date, size: size))
         }
-        let temp = folder.appending(path: FolderSync.tempPrefix + name)
-        let final = folder.appending(path: name)
-        try fm.copyItem(at: file, to: temp)
-        guard rename(temp.path(percentEncoded: false), final.path(percentEncoded: false)) == 0 else {
-            let message = String(cString: strerror(errno))
-            try? fm.removeItem(at: temp)
-            throw BackupError.checkFailed("Couldn't move the archive into place on the NAS: \(message)")
-        }
-        let localSize = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -1
-        let remoteSize = try final.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? -2
-        guard localSize == remoteSize, try XZ.sha256(of: file) == XZ.sha256(of: final) else {
-            try? fm.removeItem(at: final)
-            throw BackupError.checkFailed("The archive on the NAS didn't match the local copy, so it was removed. It will be retried next run.")
-        }
-        return Int64(remoteSize)
+        return size
     }
 
     // MARK: Report
@@ -477,23 +476,20 @@ public final class GitHubBackup: @unchecked Sendable {
     }()
 
     private func writeReport(record: RunRecord, results: [RepoResult], now: Date) {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: reportsDirectory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let report = Report(started: record.started, finished: record.finished, trigger: record.trigger,
                             outcome: record.outcome.rawValue, summary: record.summary, repos: results)
         if let data = try? encoder.encode(report) {
-            let url = reportsDirectory.appending(path: "\(Self.reportPrefix)\(Self.reportStamp.string(from: record.started)).json")
-            try? data.write(to: url, options: .atomic)
+            try? nas.write(data, to: "\(reportsDirectory)/\(Self.reportPrefix)\(Self.reportStamp.string(from: record.started)).json")
         }
         let cutoff = now.addingTimeInterval(-90 * 86400)
-        for name in (try? fm.contentsOfDirectory(atPath: reportsDirectory.path(percentEncoded: false))) ?? [] where name.hasPrefix(Self.reportPrefix) {
+        let old = ((try? nas.listTree(reportsDirectory, maxDepth: 1)) ?? nil ?? []).map(\.path).filter { name in
+            guard name.hasPrefix(Self.reportPrefix) else { return false }
             let stamp = String(name.dropFirst(Self.reportPrefix.count).prefix(15))
-            if let date = Self.reportStamp.date(from: stamp), date < cutoff {
-                try? fm.removeItem(at: reportsDirectory.appending(path: name))
-            }
+            return Self.reportStamp.date(from: stamp).map { $0 < cutoff } ?? false
         }
+        try? nas.remove(old.map { "\(reportsDirectory)/\($0)" })
     }
 }

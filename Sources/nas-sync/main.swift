@@ -30,14 +30,13 @@ func usage() {
       validate [file]              check the config file
       status [--json]              show what the app is doing (reads the app's status file)
       watch [--every N]            print a line whenever the app's status changes, and each finished run
-      mount                        mount the NAS share if needed
+      check                        check the NAS answers over SSH and rsync is installed
       diagnose                     run the NAS checklist step by step
       run folders [name] [--dry-run] [-v] [--allow-mass-delete]
                                    compare and copy folder jobs now
       run github [--dry-run] [-v]  back up GitHub repos now
       unpack <archive.bundle.xz> [out]
                                    decompress a GitHub archive to a .bundle you can git clone
-      count <folder> [--workers N] list a folder tree and time it (N=1 lists one folder at a time)
     """)
 }
 
@@ -57,14 +56,10 @@ func openStore() -> Store {
     do { return try stateDir.map { try Store(directory: $0) } ?? Store() } catch { fail("Can't open the state database: \(error)") }
 }
 
-func mountedRoot(_ config: AppConfig) -> URL {
-    switch NASMount.mount(config.nas) {
-    case .success(let m):
-        guard NASMount.isOnShare(m.mountPoint, config: config.nas) else { fail("\(m.mountPoint.path) isn't on the expected share.") }
-        return m.mountPoint
-    case .failure(let f):
-        fail("Can't mount the NAS: \(f)")
-    }
+func connectedNAS(_ config: AppConfig) -> NAS {
+    let nas = NAS(config: config.nas)
+    if case .failure(let problem) = nas.check() { fail("Can't use the NAS: \(problem)") }
+    return nas
 }
 
 @MainActor func printRun(_ r: RunRecord) {
@@ -86,7 +81,7 @@ case "validate":
     let result = ConfigLoader.load(from: url)
     for issue in result.issues { print("\(issue.severity.rawValue): \(issue)") }
     if result.isValid, let c = result.config {
-        print("Config OK. \(Format.count(c.folders.count, "folder")), NAS \(c.nas.url.absoluteString), home Wi-Fi “\(c.home.wifi)”\(c.github == nil ? "" : ", GitHub backups on").")
+        print("Config OK. \(Format.count(c.folders.count, "folder")), NAS \(c.nas.ssh.map { "\($0):" } ?? "")\(c.nas.path), home Wi-Fi “\(c.home.wifi)”\(c.github == nil ? "" : ", GitHub backups on").")
     }
     exit(result.isValid ? 0 : 1)
 
@@ -137,23 +132,20 @@ case "watch":
             if age > 120, !warnedStale { print("[\(stamp())] Status is \(Format.duration(age)) old; the app may not be running."); warnedStale = true }
             if age <= 120 { warnedStale = false }
         }
-        let fresh = ((try? store.recentRuns(limit: 20)) ?? []).filter { ($0.id ?? 0) > (lastRunID ?? 0) }
+        let fresh = ((try? store.recentRuns(limit: 20)) ?? []).filter { ($0.id ?? 0) > lastRunID }
         for r in fresh.reversed() { print("[\(stamp())] \(describe(r))") }
         if let top = fresh.first?.id { lastRunID = top }
         Thread.sleep(forTimeInterval: every)
     }
 
-case "mount":
-    let config = loadConfig()
-    switch NASMount.mount(config.nas) {
-    case .success(let m): print("Mounted at \(m.mountPoint.path(percentEncoded: false))")
-    case .failure(let f): fail(f.description)
-    }
+case "check":
+    let nas = connectedNAS(loadConfig())
+    print("OK: \(nas.rsyncTarget("")) answers, using \(nas.rsync?.path(percentEncoded: false) ?? "rsync").")
 
 case "diagnose":
     let config = loadConfig()
     let wifi = WiFi.currentName()
-    for step in NASMount.diagnose(config.nas, wifiName: wifi ?? config.home.wifi, homeWiFi: config.home.wifi) {
+    for step in NASCheck.diagnose(NAS(config: config.nas), wifiName: wifi ?? config.home.wifi, homeWiFi: config.home.wifi) {
         let mark = step.state == .ok ? "✓" : step.state == .failed ? "✕" : "–"
         print("\(mark) \(step.title)\(step.detail.map { ": \($0)" } ?? "")")
     }
@@ -167,31 +159,12 @@ case "unpack":
     do { try XZ.decompress(input, to: output) } catch { fail("Couldn't unpack: \(error.localizedDescription)") }
     print("Wrote \(output.path(percentEncoded: false)). Restore with: git clone \"\(output.lastPathComponent)\" <folder>")
 
-case "count":
-    let workers = option("--workers").flatMap(Int.init) ?? 8
-    guard args.count > 1 else { fail("usage: nas-sync count <folder> [--workers N]") }
-    let lister = FileLister(root: URL(filePath: (args[1] as NSString).expandingTildeInPath), exclude: GlobSet([]))
-    let start = Date()
-    var files = 0, folders = 0
-    var bytes: Int64 = 0
-    if workers <= 1 {
-        for e in try lister.listRecursive("") {
-            if e.kind == .file { files += 1; bytes += e.size } else if e.kind == .directory { folders += 1 }
-        }
-    } else {
-        let cache = try lister.prefetch(workers: workers)
-        folders = cache.folderCount - 1
-        files = cache.allEntries.filter { $0.kind == .file }.count
-        bytes = cache.allEntries.reduce(0) { $0 + ($1.kind == .file ? $1.size : 0) }
-    }
-    print("\(files.formatted()) files, \(folders.formatted()) folders, \(Format.bytes(bytes)) in \(Format.duration(Date().timeIntervalSince(start))) with \(max(1, workers)) worker\(workers > 1 ? "s" : "")")
-
 case "run":
     args.removeFirst()
     let what = args.first
     let config = loadConfig()
     let store = openStore()
-    let root = mountedRoot(config)
+    let nas = connectedNAS(config)
     let cancel = CancelFlag()
     signal(SIGINT) { _ in exit(130) }
     switch what {
@@ -201,7 +174,7 @@ case "run":
         if jobs.isEmpty { fail("No folder job named \(name ?? "").") }
         for job in jobs {
             guard let lock = JobLock(job: job.name, directory: store.directory) else { fail("\(job.name) is already running in the app.") }
-            let r = FolderRunner.run(job: job, nasRoot: root, store: store,
+            let r = FolderRunner.run(job: job, nas: nas, store: store,
                                      options: .init(trigger: "command line", scope: .full, dryRun: dryRun, allowMassDelete: allowMassDelete), isCancelled: { cancel.isCancelled })
             _ = lock
             printRun(r)
@@ -209,7 +182,7 @@ case "run":
     case "github":
         guard let gh = config.github else { fail("There's no [github] section in the config.") }
         guard let lock = JobLock(job: StoreKey.githubJob, directory: store.directory) else { fail("GitHub backups are already running in the app.") }
-        let backup = GitHubBackup(config: gh, destination: root.appending(path: gh.dest), store: store)
+        let backup = GitHubBackup(config: gh, nas: nas, store: store)
         let result = backup.run(trigger: "command line", dryRun: dryRun, isCancelled: { cancel.isCancelled }, progress: { p in
             if verbose { FileHandle.standardError.write(Data("[\(p.index + 1)/\(p.total)] \(p.repo): \(p.step.rawValue)\n".utf8)) }
         })

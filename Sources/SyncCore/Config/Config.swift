@@ -14,13 +14,26 @@ public struct HomeConfig: Sendable, Equatable {
 }
 
 public struct NASConfig: Sendable, Equatable {
-    /// Full share URL, for example `smb://nas.local/home`.
-    public var url: URL
-    public var unmountWhenAway: Bool
+    /// SSH login such as `me@nas.local`. Without it, `path` is a folder on this Mac.
+    public var ssh: String?
+    public var port: Int
+    /// Base folder on the NAS; every `dest` is inside it.
+    public var path: String
+    /// rsync on this Mac, when not in a standard place.
+    public var rsync: String?
+    /// rsync on the NAS. Synology only accepts the full path.
+    public var remoteRsync: String
 
-    public var host: String { url.host() ?? "" }
-    /// The share name, the first path component of the URL.
-    public var share: String { url.pathComponents.dropFirst().first ?? "" }
+    public init(ssh: String?, port: Int = 22, path: String, rsync: String? = nil, remoteRsync: String = "/usr/bin/rsync") {
+        self.ssh = ssh
+        self.port = port
+        self.path = path
+        self.rsync = rsync
+        self.remoteRsync = remoteRsync
+    }
+
+    /// The host name, without the user.
+    public var host: String { ssh.map { String($0.split(separator: "@").last ?? Substring($0)) } ?? "this Mac" }
 }
 
 public struct BatteryConfig: Sendable, Equatable {
@@ -54,6 +67,21 @@ public struct FolderJobConfig: Sendable, Equatable, Identifiable {
     public var line: Int
     /// Change-driven syncs start at most this often. Zero means no limit.
     public var atMostEvery = Interval(seconds: 0)
+
+    public init(name: String, source: URL, dest: String, exclude: [String], archiveDays: Int, staleAfter: Interval, quietPeriod: Interval,
+                maxDeletePercent: Int, maxDeleteFiles: Int, line: Int, atMostEvery: Interval = Interval(seconds: 0)) {
+        self.name = name
+        self.source = source
+        self.dest = dest
+        self.exclude = exclude
+        self.archiveDays = archiveDays
+        self.staleAfter = staleAfter
+        self.quietPeriod = quietPeriod
+        self.maxDeletePercent = maxDeletePercent
+        self.maxDeleteFiles = maxDeleteFiles
+        self.line = line
+        self.atMostEvery = atMostEvery
+    }
 
     public var id: String { name }
     public var excludeSet: GlobSet { GlobSet(exclude) }
@@ -168,16 +196,20 @@ struct ConfigDecoder {
         finish(homeSection)
 
         var nasSection = section(&r, "nas", required: true)
-        let urlText = nasSection.string("url", required: true, in: &issues) ?? ""
-        let unmount = nasSection.bool("unmount_when_away", default: false, in: &issues)
-        var nasURL = URL(string: "smb://invalid/share")!
-        if !urlText.isEmpty {
-            if let u = URL(string: urlText), u.scheme?.lowercased() == "smb", u.host() != nil,
-               u.pathComponents.count >= 2 {
-                nasURL = u
-            } else {
-                issue(nasSection.line("url"), "nas.url must look like smb://host/share.")
-            }
+        if nasSection.raw("url") != nil {
+            issue(nasSection.line("url"), "nas.url (SMB) is no longer used. Set nas.ssh and nas.path instead, for example ssh = \"me@nas.local\" and path = \"/volume1/homes/me\".")
+            _ = nasSection.string("url", required: false, in: &issues)
+        }
+        let ssh = nasSection.string("ssh", required: false, in: &issues)
+        let port = nasSection.int("port", default: 22, range: 1...65535, in: &issues)
+        let nasPath = nasSection.string("path", required: true, in: &issues) ?? ""
+        let rsyncPath = nasSection.string("rsync", required: false, in: &issues)
+        let remoteRsync = nasSection.string("remote_rsync", required: false, in: &issues) ?? "/usr/bin/rsync"
+        if let ssh, ssh.isEmpty || ssh.contains(" ") || ssh.hasPrefix("-") {
+            issue(nasSection.line("ssh"), "nas.ssh must be a login like me@nas.local.")
+        }
+        if !nasPath.isEmpty, !nasPath.hasPrefix("/") {
+            issue(nasSection.line("path"), "nas.path must be a full path on the NAS, like /volume1/homes/me.")
         }
         finish(nasSection)
 
@@ -195,7 +227,7 @@ struct ConfigDecoder {
             nightlyCheck: fd.timeOfDay("nightly_check", default: TimeOfDay(hour: 3, minute: 0), in: &issues),
             maxDeletePercent: fd.int("max_delete_percent", default: 20, range: 1...100, in: &issues),
             maxDeleteFiles: fd.int("max_delete_files", default: 1000, range: 1...Int.max, in: &issues),
-            exclude: fd.stringList("exclude", default: [".DS_Store", "._*", ".Trash", ".Trashes", "Icon\r", "*.tmp", "~$*", ".TemporaryItems", ".smbdelete*"], in: &issues)
+            exclude: fd.stringList("exclude", default: [".DS_Store", "._*", ".Trash", ".Trashes", "Icon\r", "*.tmp", "~$*", ".TemporaryItems", ".smbdelete*", "@eaDir", "#recycle"], in: &issues)
         )
         finish(fd)
 
@@ -296,7 +328,7 @@ struct ConfigDecoder {
 
         return AppConfig(
             home: HomeConfig(wifi: wifi),
-            nas: NASConfig(url: nasURL, unmountWhenAway: unmount),
+            nas: NASConfig(ssh: ssh, port: port, path: nasPath, rsync: rsyncPath, remoteRsync: remoteRsync),
             battery: BatteryConfig(holdBelowPercent: holdBelow, butNotLongerThan: maxDelay),
             folders: folders,
             folderDefaults: defaults,

@@ -7,8 +7,7 @@ private final class FakeWorld: @unchecked Sendable {
     let root: URL
     let wifi = LockedBox<String?>("Home")
     let power = LockedBox(PowerState(onBattery: false, percent: 100))
-    let mountWorks = LockedBox(true)
-    let mounted = LockedBox(true)
+    let reachable = LockedBox(true)
 
     init(folderSettings: String = "") throws {
         root = FileManager.default.temporaryDirectory.appending(path: "nassync-engine-\(UUID().uuidString)")
@@ -20,7 +19,7 @@ private final class FakeWorld: @unchecked Sendable {
         wifi = "Home"
 
         [nas]
-        url = "smb://nas.local/share"
+        path = "\(nas.path(percentEncoded: false))"
 
         [battery]
         hold_below_percent = 30
@@ -51,18 +50,11 @@ private final class FakeWorld: @unchecked Sendable {
     }
 
     var environment: EngineEnvironment {
-        let mount = NASMount.Mounted(mountPoint: nas, from: "//nas.local/share")
-        return EngineEnvironment(
+        EngineEnvironment(
             wifiName: { [wifi] in wifi.get() },
             power: { [power] in power.get() },
-            findMount: { [mounted] _ in mounted.get() ? mount : nil },
-            mount: { [mountWorks, mounted] _ in
-                if mountWorks.get() { mounted.set(true); return .success(mount) }
-                return .failure(.mountFailed(code: EAUTH, reason: "The NAS rejected the user name or password."))
-            },
-            diagnose: { _, _, _ in [NASMount.Step(title: "Share mounted", state: .failed, detail: "rejected")] },
-            isOnShare: { _, _ in true },
-            unmount: { _ in true }
+            connect: { [reachable] _ in reachable.get() ? .success(()) : .failure(.signIn("me@nas.local")) },
+            diagnose: { _, _, _ in [NASCheck.Step(title: "NAS answers over SSH", state: .failed, detail: "refused")] }
         )
     }
 
@@ -174,10 +166,9 @@ private func makeEngine(_ world: FakeWorld) throws -> Engine {
         #expect(world.nasFile("a.txt") == "A")
     }
 
-    @Test func reportsMountFailureOnceAndRecovers() async throws {
+    @Test func reportsConnectionFailureOnceAndRecovers() async throws {
         let world = try FakeWorld()
-        world.mounted.set(false)
-        world.mountWorks.set(false)
+        world.reachable.set(false)
         try world.write("a.txt", "A")
         let engine = try makeEngine(world)
         let notices = LockedBox<[Notice]>([])
@@ -185,17 +176,17 @@ private func makeEngine(_ world: FakeWorld) throws -> Engine {
         engine.start()
         defer { engine.stop() }
 
-        await waitUntil { engine.status.mountError != nil }
+        await waitUntil { engine.status.connectError != nil }
         #expect(engine.status.state == .error)
         #expect(StatusText.headline(engine.status).title == "Can't reach the NAS")
-        #expect(engine.status.mountSteps.last?.title == "Sync skipped")
+        #expect(engine.status.connectSteps.last?.title == "NAS answers over SSH")
         engine.evaluate()
         #expect(notices.get().filter { $0.title == "Can't reach the NAS" }.count == 1)
 
-        world.mountWorks.set(true)
-        engine.retryMount()
+        world.reachable.set(true)
+        engine.retryConnection()
         await waitUntil { world.nasFile("a.txt") == "A" && engine.status.state == .upToDate }
-        #expect(engine.status.mountError == nil)
+        #expect(engine.status.connectError == nil)
         #expect(notices.get().contains { $0.title == "Backups are running again" })
     }
 

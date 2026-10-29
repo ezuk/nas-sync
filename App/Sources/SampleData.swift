@@ -65,8 +65,8 @@ enum SampleData {
         s.homeWiFi = "Hearth"
         s.isHome = true
         s.locationAllowed = true
-        s.nasMounted = true
-        s.mountPoint = "/Volumes/backup"
+        s.nasConnected = true
+        s.nasLocation = "me@nas.local:/volume1/homes/me"
         s.configValid = true
         s.github = GitHubSummary(repoCount: 171, localClones: 121, remoteOnly: 50, problems: 1, excluded: 9, every: 86400, newRepos: [])
         return s
@@ -104,7 +104,7 @@ enum SampleData {
         var w = RunCounts(); w.new = 40; w.skipped = 1; w.bytes = 120_000_000
         _ = try? store.saveRun(RunRecord(kind: .folder, job: "Tresorit", trigger: "changes", started: ago(220), finished: ago(219.5), outcome: .warning, counts: w,
                                          summary: "40 files copied (120 MB), 1 skipped", items: [RunItem(action: .skipped, path: "Work/open.xlsx", detail: "File changed while copying, will retry")]))
-        _ = try? store.saveRun(RunRecord(kind: .mount, job: "", trigger: "mount", started: ago(300), finished: ago(300), outcome: .failed, summary: "Couldn't mount the NAS", message: "The NAS didn't answer."))
+        _ = try? store.saveRun(RunRecord(kind: .mount, job: "", trigger: "connection", started: ago(300), finished: ago(300), outcome: .failed, summary: "Can't reach the NAS", message: "The NAS didn't answer."))
         _ = try? store.saveRun(ghRun())
         _ = try? store.saveRun(RunRecord(kind: .away, job: "", trigger: "wifi", started: ago(1300), finished: ago(1020), outcome: .success, summary: "Not on home Wi-Fi, nothing attempted"))
         var fc = RunCounts(); fc.total = 61_131
@@ -162,7 +162,7 @@ enum SampleData {
 
         // 1d: away.
         s = base(.away)
-        s.wifiName = "Cafe-Guest"; s.isHome = false; s.nasMounted = false
+        s.wifiName = "Cafe-Guest"; s.isHome = false; s.nasConnected = false
         s.jobs = [job("Tresorit", .away, last: ago(1200), summary: nil, waiting: 206),
                   job("Documents", .away, last: ago(1200), summary: nil, waiting: 8),
                   job("Photo Exports", .away, last: ago(1200), summary: nil)]
@@ -170,15 +170,15 @@ enum SampleData {
         engine.showSample(s)
         render(PopoverView(), "1d-popover-away", width: 340)
 
-        // 1e: NAS won't mount.
+        // 1e: NAS doesn't answer.
         s = base(.error)
-        s.nasMounted = false
-        s.mountError = "The NAS rejected the user name or password."
-        s.mountSteps = [.init(title: "On the home Wi-Fi", state: .ok, detail: "Hearth"),
-                        .init(title: "NAS found on the network", state: .ok, detail: "nas.local"),
-                        .init(title: "Share mounted", state: .failed, detail: "The NAS rejected the user name or password."),
-                        .init(title: "Sync skipped", state: .skipped, detail: nil)]
-        s.jobs = [job("Tresorit", .error, last: ago(1200), summary: nil, message: s.mountError)]
+        s.nasConnected = false
+        s.connectError = "The NAS refused the SSH login for me@nas.local. Set up key login with ssh-copy-id."
+        s.connectSteps = [.init(title: "On the home Wi-Fi", state: .ok, detail: "Hearth"),
+                          .init(title: "rsync 3 installed", state: .ok, detail: nil),
+                          .init(title: "NAS answers over SSH", state: .failed, detail: s.connectError),
+                          .init(title: "Sync skipped", state: .skipped, detail: nil)]
+        s.jobs = [job("Tresorit", .error, last: ago(1200), summary: nil, message: s.connectError)]
         s.github = nil
         engine.showSample(s)
         render(PopoverView(), "1e-popover-nas-error", width: 340)
@@ -201,10 +201,9 @@ enum SampleData {
         engine.showSample(s, lastGitHubRun: ghRun())
         render(ActivityView(), "1g-activity", width: 980, height: 600)
 
-        // Live runs in Activity: a full check comparing folders, repos backing up.
+        // Live runs in Activity: a full check comparing with the NAS, repos backing up.
         s = base(.syncing)
-        let comparing = JobProgress(done: 0, total: 0, bytesDone: 0, bytesTotal: 0, current: "", step: "comparing", changedSoFar: nil, started: ago(6),
-                                    folders: 3_400, foldersTotal: 9_434)
+        let comparing = JobProgress(done: 0, total: 0, bytesDone: 0, bytesTotal: 0, current: "", step: "comparing", changedSoFar: nil, started: ago(6))
         s.jobs = [job("Tresorit", .running, last: ago(120), summary: nil, progress: comparing),
                   job(StoreKey.githubJob, .running, last: ago(1440), summary: nil, kind: .github,
                       progress: JobProgress(done: 112, total: 171, bytesDone: 0, bytesTotal: 0, current: "acme/firmware", step: "compressing", changedSoFar: 5, started: ago(6)))]

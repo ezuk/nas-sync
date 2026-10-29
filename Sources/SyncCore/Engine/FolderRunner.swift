@@ -23,21 +23,19 @@ public enum FolderRunner {
     }
 
     public static func run(
-        job: FolderJobConfig, nasRoot: URL, store: Store, options: Options, now: Date = Date(),
+        job: FolderJobConfig, nas: NAS, store: Store, options: Options, now: Date = Date(),
         isCancelled: @escaping @Sendable () -> Bool = { false },
         progress: @escaping @Sendable (FolderSync.Progress) -> Void = { _ in }
     ) -> RunRecord {
         var record = RunRecord(kind: options.scope == .full ? .check : .folder, job: job.name,
                                trigger: options.dryRun ? "\(options.trigger), dry run" : options.trigger, started: now)
-        let sync = FolderSync(job: job, shareRoot: nasRoot)
+        let sync = FolderSync(job: job, nas: nas)
         if !options.dryRun { store.setDate(now, for: StoreKey.lastAttempt(job.name)) }
 
         let plan: FolderSync.Plan
         do {
-            plan = try sync.plan(scope: options.scope, isCancelled: isCancelled, progress: progress)
-            if !options.allowMassDelete {
-                try sync.checkMassDelete(plan, knownDestFileCount: store.int(StoreKey.destFileCount(job.name)))
-            }
+            plan = try sync.plan(isCancelled: isCancelled, progress: progress)
+            if !options.allowMassDelete { try sync.checkMassDelete(plan) }
         } catch let error as FolderSync.GuardError {
             record.outcome = .blocked
             record.summary = summary(for: error)
@@ -45,64 +43,52 @@ public enum FolderRunner {
             return finish(record, store: store, dryRun: options.dryRun)
         } catch {
             record.outcome = isCancelled() ? .cancelled : .failed
-            record.summary = isCancelled() ? "Cancelled" : "Couldn't compare folders"
-            record.message = error.localizedDescription
+            record.summary = isCancelled() ? "Cancelled" : "Couldn't compare with the NAS"
+            record.message = "\(error)"
             return finish(record, store: store, dryRun: options.dryRun)
         }
 
         if options.dryRun {
             record.counts.total = plan.sourceFileCount
-            for action in plan.actions {
-                switch action {
-                case .copy(let e, let replacing):
-                    if replacing == nil { record.counts.new += 1 } else { record.counts.changed += 1 }
-                    record.counts.bytes += e.size
-                    record.items.append(RunItem(action: replacing == nil ? .new : .changed, path: e.relativePath, size: e.size))
-                case .archive(let e, let files, let bytes):
-                    record.counts.archived += files
-                    record.items.append(RunItem(action: .archived, path: e.relativePath, size: bytes))
-                case .makeDirectory:
-                    break
-                }
-            }
+            record.counts.new = plan.newFiles
+            record.counts.changed = plan.changedFiles
+            record.counts.archived = plan.deletedFiles + plan.changedFiles
+            record.counts.bytes = plan.copyBytes
+            record.items = plan.items
             record.summary = describe(record.counts, dryRun: true)
             return finish(record, store: store, dryRun: true)
         }
 
-        let out = sync.execute(plan, now: now, isCancelled: isCancelled, progress: progress)
+        var out = FolderSync.Outcome()
+        if plan.isEmpty {
+            out.counts.total = plan.sourceFileCount
+            out.counts.unchanged = plan.sourceFileCount
+        } else {
+            out = sync.execute(plan, now: now, isCancelled: isCancelled, progress: progress)
+        }
         record.counts = out.counts
         record.items = out.items
         let lastPrune = store.date("lastArchivePrune.\(job.name)") ?? .distantPast
-        if now.timeIntervalSince(lastPrune) > 86400 {
+        if out.fatalError == nil, now.timeIntervalSince(lastPrune) > 86400 {
             let pruned = sync.pruneArchive(now: now)
             record.items += pruned
             record.counts.pruned += pruned.count
             store.setDate(now, for: "lastArchivePrune.\(job.name)")
         }
         if let fatal = out.fatalError {
-            record.outcome = .failed
+            record.outcome = isCancelled() ? .cancelled : .failed
             record.message = fatal
-            record.summary = "Stopped: " + describe(out.counts, dryRun: false)
-        } else if isCancelled() {
-            record.outcome = .cancelled
-            record.summary = "Cancelled after " + describe(out.counts, dryRun: false)
+            record.summary = (isCancelled() ? "Cancelled after " : "Stopped: ") + describe(out.counts, dryRun: false)
         } else {
-            record.outcome = out.counts.failed > 0 || out.counts.skipped > 0 ? .warning : .success
+            record.outcome = out.warnings.isEmpty ? .success : .warning
             record.summary = describe(out.counts, dryRun: false)
-            if out.counts.failed > 0 {
-                record.message = out.items.filter { $0.action == .failed }.prefix(3)
-                    .map { "\($0.path): \($0.detail ?? "failed")" }.joined(separator: "\n")
-            }
+            if !out.warnings.isEmpty { record.message = out.warnings.prefix(3).joined(separator: "\n") }
         }
         if record.outcome == .success || record.outcome == .warning {
             store.setDate(now, for: StoreKey.lastSuccess(job.name))
-            if plan.isFull {
-                store.setInt(plan.sourceFileCount, for: StoreKey.sourceFileCount(job.name))
-                store.setInt(plan.sourceFileCount, for: StoreKey.destFileCount(job.name))
-                store.setDate(now, for: StoreKey.lastFullCheck(job.name))
-            } else if let known = store.int(StoreKey.destFileCount(job.name)) {
-                store.setInt(max(0, known + out.counts.new - out.counts.archived), for: StoreKey.destFileCount(job.name))
-            }
+            store.setInt(plan.sourceFileCount, for: StoreKey.sourceFileCount(job.name))
+            store.setInt(plan.sourceFileCount, for: StoreKey.destFileCount(job.name))
+            store.setDate(now, for: StoreKey.lastFullCheck(job.name))
             if let id = options.eventID { store.setValue(String(id), for: StoreKey.eventCursor(job.name)) }
             if let src = options.eventSource { store.setValue(src, for: StoreKey.eventSource(job.name)) }
         }
@@ -125,8 +111,7 @@ public enum FolderRunner {
         switch error {
         case .sourceMissing: "Source folder missing"
         case .sourceEmpty: "Source folder is empty"
-        case .destinationMissing: "NAS folder missing"
-        case .destinationIsShareRoot: "Destination is the whole share"
+        case .destinationIsShareRoot: "Destination is the whole NAS folder"
         case .massDelete(let files, _): "Stopped: \(Format.count(files, "file")) would be archived"
         }
     }

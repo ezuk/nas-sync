@@ -50,34 +50,25 @@ public final class JobLock: @unchecked Sendable {
 public struct EngineEnvironment: Sendable {
     public var wifiName: @Sendable () -> String?
     public var power: @Sendable () -> PowerState
-    public var findMount: @Sendable (NASConfig) -> NASMount.Mounted?
-    public var mount: @Sendable (NASConfig) -> Result<NASMount.Mounted, NASMount.Failure>
-    public var diagnose: @Sendable (NASConfig, String?, String) -> [NASMount.Step]
-    public var isOnShare: @Sendable (URL, NASConfig) -> Bool
-    public var unmount: @Sendable (NASMount.Mounted) -> Bool
+    /// Checks that the NAS answers and its base folder exists.
+    public var connect: @Sendable (NAS) -> Result<Void, NAS.ConnectProblem>
+    public var diagnose: @Sendable (NAS, String?, String) -> [NASCheck.Step]
 
     public init(
         wifiName: @escaping @Sendable () -> String?, power: @escaping @Sendable () -> PowerState,
-        findMount: @escaping @Sendable (NASConfig) -> NASMount.Mounted?,
-        mount: @escaping @Sendable (NASConfig) -> Result<NASMount.Mounted, NASMount.Failure>,
-        diagnose: @escaping @Sendable (NASConfig, String?, String) -> [NASMount.Step],
-        isOnShare: @escaping @Sendable (URL, NASConfig) -> Bool,
-        unmount: @escaping @Sendable (NASMount.Mounted) -> Bool
+        connect: @escaping @Sendable (NAS) -> Result<Void, NAS.ConnectProblem>,
+        diagnose: @escaping @Sendable (NAS, String?, String) -> [NASCheck.Step]
     ) {
         self.wifiName = wifiName
         self.power = power
-        self.findMount = findMount
-        self.mount = mount
+        self.connect = connect
         self.diagnose = diagnose
-        self.isOnShare = isOnShare
-        self.unmount = unmount
     }
 
     public static let live = EngineEnvironment(
         wifiName: { WiFi.currentName() }, power: { PowerState.current() },
-        findMount: { NASMount.find($0) }, mount: { NASMount.mount($0) },
-        diagnose: { NASMount.diagnose($0, wifiName: $1, homeWiFi: $2) },
-        isOnShare: { NASMount.isOnShare($0, config: $1) }, unmount: { NASMount.unmount($0) }
+        connect: { $0.check() },
+        diagnose: { NASCheck.diagnose($0, wifiName: $1, homeWiFi: $2) }
     )
 }
 
@@ -126,15 +117,14 @@ public final class Engine {
     @ObservationIgnored private var allowDeleteOnce: Set<String> = []
     /// Jobs stopped by the mass-delete guard; they wait for the user before running again.
     @ObservationIgnored private var awaitingDeleteConfirmation: Set<String> = []
-    @ObservationIgnored private var mountedByApp = false
-    @ObservationIgnored private var mounting = false
-    @ObservationIgnored private var mountFailures = 0
+    @ObservationIgnored public private(set) var nas: NAS?
+    @ObservationIgnored private var checkingConnection = false
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
     @ObservationIgnored private var configSource: DispatchSourceFileSystemObject?
     @ObservationIgnored private var configReload: DispatchWorkItem?
     @ObservationIgnored private var health: [String: JobStatus.State] = [:]
-    @ObservationIgnored private var mountHealthy = true
+    @ObservationIgnored private var connectionHealthy = true
     @ObservationIgnored private var awaySince: Date?
     @ObservationIgnored private var lastStatusData = Data()
     @ObservationIgnored private let started = Date()
@@ -150,7 +140,8 @@ public final class Engine {
         if let lastGitHubRun { lastRuns[Self.githubJob] = lastGitHubRun }
         historyVersion += 1
     }
-    static let mountRetry: TimeInterval = 300
+    /// How often the NAS connection is checked while home.
+    static let connectRecheck: TimeInterval = 300
 
     public init(configURL: URL = ConfigLoader.defaultURL(), store: Store, environment: EngineEnvironment = .live) {
         self.configURL = configURL
@@ -192,7 +183,10 @@ public final class Engine {
     }
 
     /// Call after the Mac wakes from sleep.
-    public func systemDidWake() { scheduleEvaluate(after: 5) }
+    public func systemDidWake() {
+        status.lastConnectCheck = nil
+        scheduleEvaluate(after: 5)
+    }
 
     private func scheduleEvaluate(after delay: TimeInterval) {
         guard !evaluateScheduled else { return }
@@ -225,6 +219,12 @@ public final class Engine {
     private func apply(_ new: AppConfig) {
         let old = config
         config = new
+        if old?.nas != new.nas || nas == nil {
+            nas = NAS(config: new.nas)
+            status.nasConnected = false
+            status.lastConnectCheck = nil
+        }
+        status.nasLocation = new.nas.ssh.map { "\($0):\(new.nas.path)" } ?? new.nas.path
         status.homeWiFi = new.home.wifi
         status.holdBelowPercent = new.battery.holdBelowPercent
         let names = Set(new.folders.map(\.name))
@@ -345,9 +345,8 @@ public final class Engine {
         evaluate()
     }
 
-    public func retryMount() {
-        mountFailures = 0
-        status.lastMountAttempt = nil
+    public func retryConnection() {
+        status.lastConnectCheck = nil
         evaluate()
     }
 
@@ -371,22 +370,15 @@ public final class Engine {
         trackAway(isHome: isHome, now: now)
         status.isHome = isHome
 
-        if let config, let mounted = env.findMount(config.nas) {
-            if !status.nasMounted { mountRecovered(now: now) }
-            status.nasMounted = true
-            status.mountPoint = mounted.mountPoint.path(percentEncoded: false)
-        } else {
-            status.nasMounted = false
-            status.mountPoint = nil
-            if let config, isHome, status.pausedUntil == nil { mountIfNeeded(config, now: now) }
+        if !isHome {
+            status.nasConnected = false
+            status.connectError = nil
+            status.connectSteps = []
+            status.lastConnectCheck = nil
         }
-        if !isHome, mountedByApp, config?.nas.unmountWhenAway == true, let config, let m = env.findMount(config.nas) {
-            if env.unmount(m) { mountedByApp = false }
-        }
-        if !isHome { status.mountError = nil; status.mountSteps = [] }
-
-        if let config, isHome, status.nasMounted, status.pausedUntil == nil, let mountPoint = status.mountPoint {
-            startDueJobs(config, mountPoint: URL(filePath: mountPoint, directoryHint: .isDirectory), power: power, now: now)
+        if let config, let nas, isHome, status.pausedUntil == nil { checkConnectionIfNeeded(nas, config: config, now: now) }
+        if let config, let nas, isHome, status.nasConnected, status.pausedUntil == nil {
+            startDueJobs(config, nas: nas, power: power, now: now)
         }
         refreshJobs(now: now, power: power)
         publish()
@@ -409,68 +401,55 @@ public final class Engine {
         }
     }
 
-    private func mountIfNeeded(_ config: AppConfig, now: Date) {
-        guard !mounting else { return }
-        if let last = status.lastMountAttempt, status.mountError != nil, now.timeIntervalSince(last) < Self.mountRetry { return }
-        mounting = true
-        status.lastMountAttempt = now
-        let nas = config.nas, wifi = status.wifiName, home = config.home.wifi, env = self.env
+    private func checkConnectionIfNeeded(_ nas: NAS, config: AppConfig, now: Date) {
+        guard !checkingConnection else { return }
+        if let last = status.lastConnectCheck, now.timeIntervalSince(last) < Self.connectRecheck { return }
+        checkingConnection = true
+        status.lastConnectCheck = now
+        let wifi = status.wifiName, home = config.home.wifi, env = self.env
         Task.detached(priority: .utility) { [weak self] in
-            let result = env.mount(nas)
-            let steps: [NASMount.Step]
-            if case .failure = result { steps = env.diagnose(nas, wifi, home) } else { steps = [] }
-            await MainActor.run { self?.mountFinished(result, steps: steps) }
+            let result = env.connect(nas)
+            let steps: [NASCheck.Step] = if case .failure = result { env.diagnose(nas, wifi, home) } else { [] }
+            await MainActor.run { self?.connectionChecked(result, steps: steps) }
         }
     }
 
-    private func mountFinished(_ result: Result<NASMount.Mounted, NASMount.Failure>, steps: [NASMount.Step]) {
-        mounting = false
+    private func connectionChecked(_ result: Result<Void, NAS.ConnectProblem>, steps: [NASCheck.Step]) {
+        checkingConnection = false
         switch result {
         case .success:
-            mountedByApp = true
-            mountRecovered(now: Date())
-        case .failure(let f):
-            mountFailures += 1
-            // The checklist's own mount attempt may have succeeded.
-            if steps.last?.state == .ok {
-                mountedByApp = true
-                mountRecovered(now: Date())
-                break
-            }
-            status.mountError = f.description
-            status.mountSteps = steps + [NASMount.Step(title: "Sync skipped", state: .skipped, detail: nil)]
-            if mountHealthy {
-                mountHealthy = false
-                let run = RunRecord(kind: .mount, job: "", trigger: "mount", started: Date(), finished: Date(), outcome: .failed,
-                                    summary: "Couldn't mount the NAS", message: f.description)
+            status.nasConnected = true
+            connectionRecovered(now: Date())
+        case .failure(let problem):
+            status.nasConnected = false
+            status.connectError = problem.description
+            status.connectSteps = steps
+            if connectionHealthy {
+                connectionHealthy = false
+                let run = RunRecord(kind: .mount, job: "", trigger: "connection", started: Date(), finished: Date(), outcome: .failed,
+                                    summary: "Couldn't reach the NAS", message: problem.description)
                 _ = try? store.saveRun(run)
                 historyVersion += 1
                 let last = status.jobs.compactMap(\.lastSuccess).max()
-                notify("mount", "Can't reach the NAS", "\(f.description) Nothing backed up since \(last.map { StatusText.inSentence($0) } ?? "the app started").")
+                notify("connection", "Can't reach the NAS", "\(problem.description) Nothing backed up since \(last.map { StatusText.inSentence($0) } ?? "the app started").")
             }
         }
         evaluate()
     }
 
-    private func mountRecovered(now: Date) {
-        status.mountError = nil
-        status.mountSteps = []
-        mountFailures = 0
-        if !mountHealthy {
-            mountHealthy = true
+    private func connectionRecovered(now: Date) {
+        status.connectError = nil
+        status.connectSteps = []
+        if !connectionHealthy {
+            connectionHealthy = true
             let waiting = pending.values.reduce(0) { $0 + $1.count }
-            notify("mount", "Backups are running again", waiting > 0 ? "Catching up \(Format.count(waiting, "change"))." : "The NAS is reachable again.")
-            _ = try? store.saveRun(RunRecord(kind: .mount, job: "", trigger: "mount", started: now, finished: now, outcome: .success, summary: "NAS mounted again"))
+            notify("connection", "Backups are running again", waiting > 0 ? "Catching up \(Format.count(waiting, "change"))." : "The NAS is reachable again.")
+            _ = try? store.saveRun(RunRecord(kind: .mount, job: "", trigger: "connection", started: now, finished: now, outcome: .success, summary: "NAS reachable again"))
             historyVersion += 1
         }
     }
 
-    private func startDueJobs(_ config: AppConfig, mountPoint: URL, power: PowerState, now: Date) {
-        // The destination must really be on the share, not a stale folder under /Volumes.
-        guard env.isOnShare(mountPoint, config.nas) else {
-            status.mountError = "The NAS folder isn't on the expected network share."
-            return
-        }
+    private func startDueJobs(_ config: AppConfig, nas: NAS, power: PowerState, now: Date) {
         for job in config.folders where running[job.name] == nil {
             // Once per night, counting attempts so a blocked or failed check isn't repeated until the next night.
             let nightly = config.folderDefaults.nightlyCheck.lastOccurrence(atOrBefore: now)
@@ -486,7 +465,7 @@ public final class Engine {
             guard batteryAllows(job.name, power: power, now: now) else { continue }
             pending[job.name] = nil
             if entry.scope == .full { store.setDate(now, for: StoreKey.fullCheckAttempt(job.name)) }
-            runFolder(job, mountPoint: mountPoint, scope: entry.scope, eventID: entry.eventID,
+            runFolder(job, nas: nas, scope: entry.scope, eventID: entry.eventID,
                       trigger: entry.scope == .full ? (runAnywayOnce.contains(job.name) ? "manual" : "full check") : "changes")
         }
         if let gh = config.github, running[Self.githubJob] == nil {
@@ -497,7 +476,7 @@ public final class Engine {
             let due = Schedule.isDue(lastSuccess: last, every: gh.every, around: gh.around, now: now) && !failedRecently
             if requested || due, batteryAllows(Self.githubJob, power: power, now: now) {
                 store.setValue(nil, for: "githubRequested")
-                runGitHub(gh, mountPoint: mountPoint, trigger: requested ? "manual" : "scheduled (every \(StatusText.every(gh.every.seconds)))")
+                runGitHub(gh, nas: nas, trigger: requested ? "manual" : "scheduled (every \(StatusText.every(gh.every.seconds)))")
             }
         }
     }
@@ -511,7 +490,7 @@ public final class Engine {
 
     // MARK: Running
 
-    private func runFolder(_ job: FolderJobConfig, mountPoint: URL, scope: FolderSync.Scope, eventID: UInt64, trigger: String) {
+    private func runFolder(_ job: FolderJobConfig, nas: NAS, scope: FolderSync.Scope, eventID: UInt64, trigger: String) {
         let flag = CancelFlag()
         running[job.name] = flag
         runAnywayOnce.remove(job.name)
@@ -528,10 +507,9 @@ public final class Engine {
                 await MainActor.run { self?.finished(name, record: nil, requeue: scope) }
                 return
             }
-            let record = FolderRunner.run(job: job, nasRoot: mountPoint, store: store, options: options, isCancelled: { flag.isCancelled }) { p in
+            let record = FolderRunner.run(job: job, nas: nas, store: store, options: options, isCancelled: { flag.isCancelled }) { p in
                 let jp = JobProgress(done: p.done, total: p.total, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, current: p.current,
-                                     step: p.phase.rawValue, changedSoFar: nil, started: startedAt,
-                                     folders: p.folders, foldersTotal: p.foldersTotal)
+                                     step: p.phase.rawValue, changedSoFar: nil, started: startedAt)
                 Task { @MainActor in self?.progress[name] = jp; self?.publishThrottled() }
             }
             _ = lock
@@ -540,13 +518,12 @@ public final class Engine {
         }
     }
 
-    private func runGitHub(_ gh: GitHubConfig, mountPoint: URL, trigger: String) {
+    private func runGitHub(_ gh: GitHubConfig, nas: NAS, trigger: String) {
         let flag = CancelFlag()
         let name = Self.githubJob
         running[name] = flag
         runAnywayOnce.remove(name)
         let store = self.store
-        let destination = mountPoint.appending(path: gh.dest)
         let startedAt = Date()
         store.setDate(startedAt, for: StoreKey.lastAttempt(name))
         progress[name] = JobProgress(done: 0, total: 0, bytesDone: 0, bytesTotal: 0, current: "Finding repos", step: "check", changedSoFar: 0, started: startedAt)
@@ -557,7 +534,7 @@ public final class Engine {
                 return
             }
             let changed = LockedBox(0)
-            let backup = GitHubBackup(config: gh, destination: destination, store: store)
+            let backup = GitHubBackup(config: gh, nas: nas, store: store)
             let result = backup.run(trigger: trigger, isCancelled: { flag.isCancelled }) { p in
                 let jp = JobProgress(done: p.index, total: p.total, bytesDone: 0, bytesTotal: 0, current: p.repo,
                                      step: p.step.rawValue, changedSoFar: changed.get(), started: startedAt)
@@ -583,6 +560,7 @@ public final class Engine {
         progress[job] = nil
         if record?.outcome == .blocked, record?.summary.hasPrefix("Stopped:") == true { awaitingDeleteConfirmation.insert(job) } else if record != nil { awaitingDeleteConfirmation.remove(job) }
         if record?.outcome == .failed { retryAfter[job] = Date().addingTimeInterval(Self.failureBackoff) } else { retryAfter[job] = nil }
+        if record?.outcome == .failed { status.lastConnectCheck = nil }
         if let record {
             lastRuns[job] = record
             historyVersion += 1
@@ -693,7 +671,7 @@ public final class Engine {
             j.state = .error
             j.message = last.summary
         }
-        if status.nasMounted == false, status.isHome, status.mountError != nil, j.state != .running { j.state = .error; j.message = status.mountError }
+        if status.nasConnected == false, status.isHome, status.connectError != nil, j.state != .running { j.state = .error; j.message = status.connectError }
         return j
     }
 
@@ -702,7 +680,7 @@ public final class Engine {
         if status.pausedUntil != nil { return .paused }
         if !status.isHome { return .away }
         let states = status.jobs.map(\.state)
-        if status.mountError != nil || states.contains(.error) { return .error }
+        if status.connectError != nil || states.contains(.error) { return .error }
         if states.contains(.stale) { return .stale }
         if states.contains(.running) { return .syncing }
         if states.contains(.holdingOff) { return .holdingOff }
@@ -713,7 +691,7 @@ public final class Engine {
         let old = health[j.name]
         let new: JobStatus.State = j.state == .error || j.state == .stale ? j.state : .idle
         health[j.name] = new
-        guard let old, old != new, status.mountError == nil else { return }
+        guard let old, old != new, status.connectError == nil else { return }
         switch new {
         case .error:
             notify("job-\(j.name)", "\(j.name) needs attention", j.message ?? "Open NAS Sync for details.")

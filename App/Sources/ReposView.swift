@@ -99,9 +99,9 @@ struct ReposView: View {
                 if let path = r.localPath { Button("Show Local Clone") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) } }
                 Button("Open on GitHub") { NSWorkspace.shared.open(URL(string: "https://github.com/\(r.fullName)")!) }
                 if let gh = model.engine.config?.github {
-                    Button("Reveal Archives on NAS") {
+                    Button("Copy Archive Path on NAS") {
                         let parts = r.fullName.split(separator: "/").map(String.init)
-                        model.revealOnNAS("\(gh.dest)/bundles/\(gh.group(forOwner: parts[0]))/\(parts[1])")
+                        model.copyNASPath("\(gh.dest)/bundles/\(gh.group(forOwner: parts[0]))/\(parts[1])")
                     }
                 }
                 Divider()

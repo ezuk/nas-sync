@@ -136,7 +136,8 @@ import Testing
     wifi = "MyWiFi"
 
     [nas]
-    url = "smb://nas.local/home"
+    ssh = "me@nas.local"
+    path = "/volume1/homes/me"
 
     [battery]
     hold_below_percent = 25
@@ -169,7 +170,10 @@ import Testing
         let config = try #require(result.config)
         #expect(config.home.wifi == "MyWiFi")
         #expect(config.nas.host == "nas.local")
-        #expect(config.nas.share == "home")
+        #expect(config.nas.ssh == "me@nas.local")
+        #expect(config.nas.port == 22)
+        #expect(config.nas.path == "/volume1/homes/me")
+        #expect(config.nas.remoteRsync == "/usr/bin/rsync")
         #expect(config.battery.holdBelowPercent == 25)
         #expect(config.battery.butNotLongerThan == .hours(12))
         let folder = try #require(config.folders.first)
@@ -178,7 +182,7 @@ import Testing
         #expect(folder.archiveDays == 60)
         #expect(folder.exclude.contains(".DS_Store"))
         #expect(folder.exclude.contains("**/node_modules"))
-        #expect(folder.line == 13)
+        #expect(folder.line == 14)
         #expect(folder.atMostEvery == .hours(1))
         let gh = try #require(config.github)
         #expect(gh.every == .hours(6))
@@ -197,7 +201,7 @@ import Testing
         wiifi = "typo"
 
         [nas]
-        url = "http://nope"
+        path = "relative"
 
         [folders]
         quiet_period = "soon"
@@ -211,10 +215,15 @@ import Testing
         #expect(result.config == nil)
         let messages = result.issues.map(\.description)
         #expect(messages.contains("line 3: Unknown setting 'home.wiifi'."))
-        #expect(messages.contains("line 6: nas.url must look like smb://host/share."))
+        #expect(messages.contains("line 6: nas.path must be a full path on the NAS, like /volume1/homes/me."))
         #expect(messages.contains { $0.hasPrefix("line 9: 'folders.quiet_period'") })
         #expect(messages.contains { $0.hasPrefix("line 13: folder 'A': source") })
         #expect(messages.contains { $0.hasPrefix("line 14: folder 'A': dest") })
+    }
+
+    @Test func explainsTheOldSMBSetting() {
+        let result = ConfigLoader.parse("[home]\nwifi = \"W\"\n[nas]\nurl = \"smb://nas/home\"\n", home: home)
+        #expect(result.issues.contains { $0.message.hasPrefix("nas.url (SMB) is no longer used") })
     }
 
     @Test func reportsMissingSections() {
@@ -228,7 +237,7 @@ import Testing
         [home]
         wifi = "W"
         [nas]
-        url = "smb://n/s"
+        path = "/n"
         [[folder]]
         name = "A"
         source = "/a"
@@ -263,7 +272,8 @@ import Testing
     wifi = "Home"
 
     [nas]
-    url = "smb://nas.local/backup"
+    ssh = "me@nas.local"
+    path = "/volume1/backup"
 
     """
 

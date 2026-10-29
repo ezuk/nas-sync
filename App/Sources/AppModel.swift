@@ -117,19 +117,11 @@ final class AppModel {
         engine.reloadConfig()
     }
 
-    /// Opens the share in Finder, which asks for the password and offers to save it in the Keychain.
-    func connectInFinder() {
-        if let url = engine.config?.nas.url { NSWorkspace.shared.open(url) }
-    }
-
-    func revealOnNAS(_ relative: String) {
-        guard let mount = engine.status.mountPoint else { return }
-        let url = URL(filePath: mount).appending(path: relative)
-        var target = url
-        while !FileManager.default.fileExists(atPath: target.path(percentEncoded: false)), target.pathComponents.count > 2 {
-            target.deleteLastPathComponent()
-        }
-        NSWorkspace.shared.activateFileViewerSelecting([target])
+    /// Copies the full path of a folder on the NAS.
+    func copyNASPath(_ relative: String) {
+        guard let nas = engine.nas else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(nas.absolute(relative), forType: .string)
     }
 }
 

@@ -20,8 +20,8 @@ struct PopoverView: View {
         let headline = StatusText.headline(status, now: now)
         VStack(alignment: .leading, spacing: 0) {
             hero(headline, now: now)
-            if status.state == .error, !status.mountSteps.isEmpty {
-                mountChecklist
+            if status.state == .error, !status.connectSteps.isEmpty {
+                connectChecklist
             } else if status.state != .syncing {
                 chips
             }
@@ -123,7 +123,7 @@ struct PopoverView: View {
                 Chip(color: Palette.grey, text: "Not home Wi-Fi")
             }
             if status.isHome {
-                Chip(color: status.nasMounted ? Palette.green : Palette.red, text: status.nasMounted ? "NAS mounted" : "NAS not mounted")
+                Chip(color: status.nasConnected ? Palette.green : Palette.red, text: status.nasConnected ? "NAS connected" : "NAS not connected")
             }
             if status.onBattery, let pct = status.batteryPercent {
                 Chip(color: pct < status.holdBelowPercent ? Palette.orange : Palette.green, text: "On battery \(pct)%")
@@ -145,11 +145,11 @@ struct PopoverView: View {
         .padding(.bottom, 14)
     }
 
-    private var mountChecklist: some View {
+    private var connectChecklist: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("What I tried").font(.system(size: 12, weight: .semibold))
-                ForEach(Array(status.mountSteps.enumerated()), id: \.offset) { _, step in
+                ForEach(Array(status.connectSteps.enumerated()), id: \.offset) { _, step in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(step.state == .ok ? "✓" : step.state == .failed ? "✕" : "–")
                             .fontWeight(.bold)
@@ -168,8 +168,7 @@ struct PopoverView: View {
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.red.opacity(0.22)))
 
             HStack(spacing: 8) {
-                Button("Try Again") { model.engine.retryMount() }.buttonStyle(.borderedProminent)
-                Button("Update Password…") { model.connectInFinder() }
+                Button("Try Again") { model.engine.retryConnection() }.buttonStyle(.borderedProminent)
                 Button("Details") { openAndActivate(openWindow, id: WindowID.activity) }
             }
             .controlSize(.small)
@@ -278,7 +277,7 @@ struct PopoverView: View {
             if s.state == .holdingOff {
                 MenuRow(title: "Run Anyway") { model.engine.runAnyway() }
             }
-            if s.isHome, s.nasMounted, s.pausedUntil == nil {
+            if s.isHome, s.nasConnected, s.pausedUntil == nil {
                 if !s.folderJobs.isEmpty, !s.folderJobs.contains(where: { $0.state == .running }) {
                     MenuRow(title: s.github == nil ? "Sync Now" : "Sync Folders Now", shortcut: "⌘S", key: "s") { model.engine.syncFoldersNow() }
                 }

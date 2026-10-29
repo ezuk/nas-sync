@@ -11,8 +11,11 @@ public enum StarterConfig {
         wifi = "\(wifi.replacingOccurrences(of: "\"", with: "\\\""))"   # only sync on this Wi-Fi network
 
         [nas]
-        url = "smb://nas.local/backup"   # the password lives in your Keychain
-        unmount_when_away = false
+        ssh = "me@nas.local"             # SSH login; set up key login with ssh-copy-id
+        # port = 22
+        path = "/volume1/homes/me"       # base folder on the NAS; every dest is inside it
+        # rsync = "/opt/homebrew/bin/rsync"  # rsync 3 on this Mac (brew install rsync)
+        # remote_rsync = "/usr/bin/rsync"    # rsync on the NAS
 
         [battery]
         hold_below_percent = 30          # on battery, wait if the charge is lower...
@@ -26,7 +29,7 @@ public enum StarterConfig {
         nightly_check = "03:00"          # compare everything once a day
         max_delete_percent = 20          # stop if a run would archive more than this...
         max_delete_files = 1000          # ...or this many files
-        exclude = [".DS_Store", "._*", "*.tmp", "~$*"]
+        exclude = [".DS_Store", "._*", "*.tmp", "~$*", "@eaDir", "#recycle"]
 
         [[folder]]
         name = "Documents"

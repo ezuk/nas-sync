@@ -51,7 +51,7 @@ struct SettingsView: View {
 struct ConfigPane: View {
     @Environment(AppModel.self) private var model
     @State private var text = ""
-    @State private var hasPassword = false
+    @State private var hasRsync = true
 
     private var exists: Bool { FileManager.default.fileExists(atPath: model.engine.configURL.path(percentEncoded: false)) }
 
@@ -95,7 +95,7 @@ struct ConfigPane: View {
 
     private func reload() {
         text = (try? String(contentsOf: model.engine.configURL, encoding: .utf8)) ?? ""
-        if let host = model.engine.config?.nas.host { hasPassword = KeychainCheck.hasPassword(host: host) }
+        hasRsync = Rsync.find(override: model.engine.config?.nas.rsync) != nil
     }
 
     @ViewBuilder
@@ -113,9 +113,8 @@ struct ConfigPane: View {
             if s.usingLastGoodConfig {
                 ValidationRow(kind: .warning, text: "Still running the last valid version of this file until the errors are fixed.")
             }
-            if let host = model.engine.config?.nas.host {
-                ValidationRow(kind: hasPassword ? .ok : .warning,
-                              text: hasPassword ? "Keychain has a password for \(host)." : "No Keychain password found for \(host). Connect once in Finder and save the password.")
+            if !hasRsync {
+                ValidationRow(kind: .warning, text: Rsync.missingMessage)
             }
             if !model.location.isAllowed {
                 HStack(spacing: 4) {
@@ -279,13 +278,12 @@ struct GeneralPane: View {
             PrefRow(label: "Config file", help: "Point several Macs at the same file to share one setup.") {
                 Button("Change…", action: chooseConfig)
             } value: { Text(model.engine.configURL.path(percentEncoded: false).replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path(percentEncoded: false), with: "~/")).font(.system(size: 11, design: .monospaced)) }
-            PrefRow(label: "NAS password", help: "Stored in your login Keychain, never in the config file. Finder asks for it and offers to save it.") {
-                Button("Change…") { model.connectInFinder() }
+            PrefRow(label: "NAS login", help: "Uses your SSH key, never a password. Set it up once with ssh-copy-id.") {
+                EmptyView()
             } value: {
-                let host = model.engine.config?.nas.host ?? "your NAS"
-                Text(KeychainCheck.hasPassword(host: host) ? "Saved for \(host)" : "Not saved for \(host)")
+                Text(model.engine.status.nasLocation ?? "Not set").font(.system(size: 11, design: .monospaced))
             }
-            PrefRow(label: "Command-line tool", help: "Run nas-sync status, run, mount or diagnose from a terminal. Build it with swift build in the repo.") {
+            PrefRow(label: "Command-line tool", help: "Run nas-sync status, run, check or diagnose from a terminal. Build it with swift build in the repo.") {
                 EmptyView()
             } value: { Text("nas-sync").font(.system(size: 11, design: .monospaced)) }
         }
@@ -342,7 +340,7 @@ struct PermissionsPane: View {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
             }
             let host = model.engine.config?.nas.host ?? "the NAS"
-            permission("Local Network", ok: model.engine.status.nasMounted || model.engine.status.mountSteps.contains { $0.title.hasPrefix("NAS found") && $0.state == .ok },
+            permission("Local Network", ok: model.engine.status.nasConnected || model.engine.status.connectSteps.contains { $0.title.hasPrefix("NAS answers") && $0.state == .ok },
                        help: "Needed to reach \(host). macOS asks the first time the app connects.", unknownWhenFalse: !model.engine.status.isHome) {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
             }
@@ -368,22 +366,5 @@ enum FullDiskAccess {
     static var isGranted: Bool {
         let probe = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Safari")
         return (try? FileManager.default.contentsOfDirectory(atPath: probe.path(percentEncoded: false))) != nil
-    }
-}
-
-enum KeychainCheck {
-    /// Looks up the item's attributes only, so macOS doesn't ask for permission to read the password.
-    static func hasPassword(host: String) -> Bool {
-        let short = String(host.lowercased().split(separator: ".").first ?? "")
-        for server in [host, short + ".local", short] {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassInternetPassword,
-                kSecAttrServer as String: server,
-                kSecMatchLimit as String: kSecMatchLimitOne,
-                kSecReturnAttributes as String: true,
-            ]
-            if SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess { return true }
-        }
-        return false
     }
 }

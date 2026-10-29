@@ -13,11 +13,21 @@ public struct FolderSync: Sendable {
     public var source: URL
     public var destination: URL
 
-    public init(job: FolderJobConfig, destinationRoot: URL) {
+    /// Syncs into `shareRoot/<job.dest>`.
+    public init(job: FolderJobConfig, shareRoot: URL) {
+        self.init(job: job, destination: shareRoot.appending(path: job.dest, directoryHint: .isDirectory))
+        self.shareRoot = shareRoot
+    }
+
+    /// Syncs into exactly `destination`.
+    public init(job: FolderJobConfig, destination: URL) {
         self.job = job
         source = job.source
-        destination = destinationRoot
+        self.destination = destination
     }
+
+    /// When set, the destination must be strictly inside it.
+    public var shareRoot: URL?
 
     var sourceLister: FileLister { FileLister(root: source, exclude: job.excludeSet, reservedRootNames: [Self.archiveFolder]) }
     var destLister: FileLister { FileLister(root: destination, exclude: job.excludeSet, reservedRootNames: [Self.archiveFolder]) }
@@ -58,6 +68,7 @@ public struct FolderSync: Sendable {
         case sourceMissing(String)
         case sourceEmpty(String)
         case destinationMissing(String)
+        case destinationIsShareRoot(String)
         case massDelete(files: Int, percent: Int)
 
         public var description: String {
@@ -65,6 +76,7 @@ public struct FolderSync: Sendable {
             case .sourceMissing(let p): "The source folder \(p) doesn't exist. Nothing was changed on the NAS."
             case .sourceEmpty(let p): "The source folder \(p) is empty, but the NAS copy has files. Nothing was changed, in case the source is temporarily unavailable."
             case .destinationMissing(let p): "The NAS folder \(p) isn't there."
+            case .destinationIsShareRoot(let p): "The destination \(p) is the whole NAS share. Set dest to a folder inside the share."
             case .massDelete(let files, let percent): "This run would archive \(files.formatted()) deleted files (\(percent)% of the backup). Stopped to be safe; confirm to continue."
             }
         }
@@ -80,6 +92,11 @@ public struct FolderSync: Sendable {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: source.path(percentEncoded: false), isDirectory: &isDir), isDir.boolValue else {
             throw GuardError.sourceMissing(source.path(percentEncoded: false))
+        }
+        if let shareRoot {
+            let root = shareRoot.standardizedFileURL.path(percentEncoded: false).trimmingSuffix("/")
+            let dest = destination.standardizedFileURL.path(percentEncoded: false).trimmingSuffix("/")
+            guard dest.hasPrefix(root + "/"), dest.count > root.count + 1 else { throw GuardError.destinationIsShareRoot(dest) }
         }
         let src = sourceLister
         var dst = destLister
@@ -473,5 +490,13 @@ extension FolderSync.Action {
         case .copy(let e, _): e.relativePath
         case .archive(let e, _, _): e.relativePath
         }
+    }
+}
+
+extension String {
+    func trimmingSuffix(_ suffix: String) -> String {
+        var s = self
+        while s.hasSuffix(suffix), s.count > suffix.count { s.removeLast(suffix.count) }
+        return s
     }
 }

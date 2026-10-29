@@ -50,7 +50,7 @@ final class TempPair {
     }
 
     func sync(_ job: FolderJobConfig? = nil) -> FolderSync {
-        FolderSync(job: job ?? self.job(), destinationRoot: dest)
+        FolderSync(job: job ?? self.job(), destination: dest)
     }
 }
 
@@ -265,5 +265,32 @@ final class TempPair {
         #expect(FolderWatcher.relative("/a/b/c", root: "/a/") == "b/c")
         #expect(FolderWatcher.relative("/a", root: "/a/") == "")
         #expect(FolderWatcher.relative("/ab/c", root: "/a/") == nil)
+    }
+}
+
+@Suite struct FolderRunnerTests {
+    @Test func writesIntoTheJobFolderInsideTheShare() throws {
+        let t = try TempPair()
+        try t.write("a.txt", "A")
+        let store = try Store(directory: t.root.appending(path: "state"))
+        try t.write("unrelated/keep.txt", "K", in: t.dest)
+        var job = t.job()
+        job.dest = "Backups/Docs"
+        try FileManager.default.createDirectory(at: t.dest.appending(path: "Backups/Docs"), withIntermediateDirectories: true)
+
+        let r = FolderRunner.run(job: job, nasRoot: t.dest, store: store, options: .init(trigger: "test", scope: .full))
+        #expect(r.outcome == .success)
+        #expect(t.read("Backups/Docs/a.txt") == "A")
+        #expect(t.read("unrelated/keep.txt") == "K")
+        #expect(!t.exists("_archive"))
+    }
+
+    @Test func refusesTheShareRootItself() throws {
+        let t = try TempPair()
+        try t.write("a.txt", "A")
+        var job = t.job()
+        job.dest = "."
+        let sync = FolderSync(job: job, shareRoot: t.dest)
+        #expect(throws: FolderSync.GuardError.self) { try sync.plan(scope: .full) }
     }
 }

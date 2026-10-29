@@ -29,7 +29,7 @@ public enum FolderRunner {
     ) -> RunRecord {
         var record = RunRecord(kind: options.scope == .full ? .check : .folder, job: job.name,
                                trigger: options.dryRun ? "\(options.trigger), dry run" : options.trigger, started: now)
-        let sync = FolderSync(job: job, destinationRoot: nasRoot)
+        let sync = FolderSync(job: job, shareRoot: nasRoot)
         if !options.dryRun { store.setDate(now, for: StoreKey.lastAttempt(job.name)) }
 
         let plan: FolderSync.Plan
@@ -126,6 +126,7 @@ public enum FolderRunner {
         case .sourceMissing: "Source folder missing"
         case .sourceEmpty: "Source folder is empty"
         case .destinationMissing: "NAS folder missing"
+        case .destinationIsShareRoot: "Destination is the whole share"
         case .massDelete(let files, _): "Stopped: \(Format.count(files, "file")) would be archived"
         }
     }

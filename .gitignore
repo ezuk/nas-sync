@@ -1,0 +1,24 @@
+# Build output
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+
+# Local, per-developer settings (signing team, bundle ID)
+Local.xcconfig
+
+# Personal config and data
+*.local.toml
+.private-patterns
+
+# Editor and tool folders
+.DS_Store
+.serena/
+.playwright-mcp/
+.claude/
+.cursor/
+.vscode/
+CLAUDE.md
+AGENTS.md

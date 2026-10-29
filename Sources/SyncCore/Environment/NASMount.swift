@@ -28,6 +28,12 @@ public enum NASMount {
         public var title: String
         public var state: State
         public var detail: String?
+
+        public init(title: String, state: State, detail: String?) {
+        self.title = title
+        self.state = state
+        self.detail = detail
+    }
     }
 
     // MARK: Finding mounts

@@ -104,7 +104,7 @@ struct ConfigPane: View {
         VStack(alignment: .leading, spacing: 6) {
             if let c = model.engine.config, s.configValid {
                 var parts = [Format.count(c.folders.count, "folder"), "1 NAS", "home network “\(c.home.wifi)”"]
-                let _ = c.github.map { parts.append("GitHub backups every \($0.every)") }
+                let _ = c.github.map { parts.append("GitHub backups every \(StatusText.every($0.every.seconds))") }
                 ValidationRow(kind: .ok, text: "Valid. " + parts.joined(separator: ", ") + ".")
             }
             ForEach(model.engine.configIssues, id: \.description) { issue in

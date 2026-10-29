@@ -262,7 +262,7 @@ struct RunDetailView: View {
                 KPI(value: c.unchanged.formatted(), label: "Unchanged")
                 KPI(value: c.failed.formatted(), label: "Failed", color: c.failed > 0 ? Palette.red : .primary)
                 KPI(value: Format.bytes(c.bytes), label: "Sent to NAS")
-                KPI(value: c.pruned.formatted(), label: "Old archives removed")
+                KPI(value: c.pruned.formatted(), label: "Pruned")
             }
             .padding(.bottom, 18)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 0) {
@@ -314,23 +314,25 @@ struct RunDetailView: View {
             }
         }
         .padding(.vertical, 7)
-        .background(item.action == .failed ? Palette.red.opacity(0.05) : .clear)
     }
+
+    private var dot: some View { Text("·").foregroundStyle(.secondary) }
 
     private func footer(remaining: Int, revealPath: String?) -> some View {
         HStack(spacing: 6) {
             if remaining > 0 {
-                Text("+ \(remaining.formatted()) more ·").foregroundStyle(.secondary)
+                Text("+ \(remaining.formatted()) more").foregroundStyle(.secondary)
+                dot
                 Button("Show all") { showAll = true }.buttonStyle(.link)
             } else if showAll {
                 Button("Show fewer") { showAll = false }.buttonStyle(.link)
             }
             if run.kind == .github, !run.stepTimings.isEmpty {
-                Text("·").foregroundStyle(.secondary)
+                if remaining > 0 || showAll { dot }
                 Button(showTimings ? "Hide step timings" : "Step timings") { showTimings.toggle() }.buttonStyle(.link)
             }
             if let revealPath, model.engine.status.nasMounted {
-                Text("·").foregroundStyle(.secondary)
+                if remaining > 0 || showAll || (run.kind == .github && !run.stepTimings.isEmpty) { dot }
                 Button("Reveal on NAS") { model.revealOnNAS(revealPath) }.buttonStyle(.link)
             }
         }

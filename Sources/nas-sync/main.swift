@@ -33,6 +33,7 @@ func usage() {
       run folders [name] [--dry-run] [-v]
                                    compare and copy folder jobs now
       run github [--dry-run] [-v]  back up GitHub repos now
+      count <folder> [--workers N] list a folder tree and time it (N=1 lists one folder at a time)
     """)
 }
 
@@ -116,6 +117,25 @@ case "diagnose":
         print("\(mark) \(step.title)\(step.detail.map { ": \($0)" } ?? "")")
     }
     if wifi == nil { print("(Wi-Fi name isn't visible to command-line tools, so the Wi-Fi step was assumed.)") }
+
+case "count":
+    let workers = option("--workers").flatMap(Int.init) ?? 8
+    guard args.count > 1 else { fail("usage: nas-sync count <folder> [--workers N]") }
+    let lister = FileLister(root: URL(filePath: (args[1] as NSString).expandingTildeInPath), exclude: GlobSet([]))
+    let start = Date()
+    var files = 0, folders = 0
+    var bytes: Int64 = 0
+    if workers <= 1 {
+        for e in try lister.listRecursive("") {
+            if e.kind == .file { files += 1; bytes += e.size } else if e.kind == .directory { folders += 1 }
+        }
+    } else {
+        let cache = try lister.prefetch(workers: workers)
+        folders = cache.folderCount - 1
+        files = cache.allEntries.filter { $0.kind == .file }.count
+        bytes = cache.allEntries.reduce(0) { $0 + ($1.kind == .file ? $1.size : 0) }
+    }
+    print("\(files.formatted()) files, \(folders.formatted()) folders, \(Format.bytes(bytes)) in \(Format.duration(Date().timeIntervalSince(start))) with \(max(1, workers)) worker\(workers > 1 ? "s" : "")")
 
 case "run":
     args.removeFirst()

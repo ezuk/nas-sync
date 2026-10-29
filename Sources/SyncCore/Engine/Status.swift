@@ -18,6 +18,17 @@ public struct JobProgress: Sendable, Codable, Equatable {
     public var changedSoFar: Int?
     public var started: Date
 
+    public init(done: Int, total: Int, bytesDone: Int64, bytesTotal: Int64, current: String, step: String?, changedSoFar: Int?, started: Date) {
+        self.done = done
+        self.total = total
+        self.bytesDone = bytesDone
+        self.bytesTotal = bytesTotal
+        self.current = current
+        self.step = step
+        self.changedSoFar = changedSoFar
+        self.started = started
+    }
+
     public var fraction: Double {
         if bytesTotal > 0 { return min(1, Double(bytesDone) / Double(bytesTotal)) }
         return total > 0 ? min(1, Double(done) / Double(total)) : 0
@@ -49,6 +60,23 @@ public struct JobStatus: Sendable, Codable, Equatable, Identifiable {
     public var needsDeleteConfirmation: Bool
     public var staleAfter: TimeInterval
 
+    public init(name: String, kind: Kind, state: State, lastSuccess: Date?, lastSummary: String?, lastOutcome: RunOutcome?, message: String?, waitingChanges: Int, fileCount: Int?, progress: JobProgress?, nextRun: Date?, holdUntil: Date?, needsDeleteConfirmation: Bool, staleAfter: TimeInterval) {
+        self.name = name
+        self.kind = kind
+        self.state = state
+        self.lastSuccess = lastSuccess
+        self.lastSummary = lastSummary
+        self.lastOutcome = lastOutcome
+        self.message = message
+        self.waitingChanges = waitingChanges
+        self.fileCount = fileCount
+        self.progress = progress
+        self.nextRun = nextRun
+        self.holdUntil = holdUntil
+        self.needsDeleteConfirmation = needsDeleteConfirmation
+        self.staleAfter = staleAfter
+    }
+
     public var id: String { name }
 }
 
@@ -61,6 +89,16 @@ public struct GitHubSummary: Sendable, Codable, Equatable {
     public var every: TimeInterval
     /// Repos found since the last time the user dismissed the note.
     public var newRepos: [String]
+
+    public init(repoCount: Int, localClones: Int, remoteOnly: Int, problems: Int, excluded: Int, every: TimeInterval, newRepos: [String]) {
+        self.repoCount = repoCount
+        self.localClones = localClones
+        self.remoteOnly = remoteOnly
+        self.problems = problems
+        self.excluded = excluded
+        self.every = every
+        self.newRepos = newRepos
+    }
 }
 
 public struct StatusSnapshot: Sendable, Codable, Equatable {
@@ -131,7 +169,7 @@ public enum StatusText {
         if s < 60 { return "just now" }
         if s < 3600 { return Format.count(Int(s / 60), "minute") + " ago" }
         if s < 86400 * 0.75 { return Format.count(Int((s / 3600).rounded()), "hour") + " ago" }
-        return dayAndTime(date, now: now)
+        return inSentence(date, now: now)
     }
 
     /// Short form for the right column of job rows, like "4 min ago" or "Yesterday 18:02".
@@ -142,6 +180,20 @@ public enum StatusText {
         if s < 3600 { return "\(Int(s / 60)) min ago" }
         if s < 6 * 3600 { return "\(Int(s / 3600)) hr ago" }
         return dayAndTime(date, now: now)
+    }
+
+    /// "24h", "6h", "2d", "30m".
+    public static func every(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds)
+        if s % 3600 == 0, s <= 72 * 3600 { return "\(s / 3600)h" }
+        if s % 86400 == 0 { return "\(s / 86400)d" }
+        return Interval(seconds: seconds).description
+    }
+
+    /// dayAndTime for use inside a sentence ("since yesterday 18:02").
+    public static func inSentence(_ date: Date, now: Date = Date()) -> String {
+        let text = dayAndTime(date, now: now)
+        return text.hasPrefix("Yesterday") ? "y" + text.dropFirst() : text
     }
 
     public static func dayAndTime(_ date: Date, now: Date = Date()) -> String {
@@ -196,7 +248,7 @@ public enum StatusText {
             if !s.nasMounted, s.mountError != nil {
                 let last = s.jobs.compactMap(\.lastSuccess).max()
                 return Headline(title: "Can't reach the NAS",
-                                detail: "You're home, but the backup share couldn't be mounted. Nothing has been backed up since \(last.map { dayAndTime($0, now: now) } ?? "the app started").")
+                                detail: "You're home, but the backup share couldn't be mounted. Nothing has been backed up since \(last.map { inSentence($0, now: now) } ?? "the app started").")
             }
             if !s.configValid, !s.usingLastGoodConfig {
                 return Headline(title: "The config file has problems", detail: s.configIssues.first ?? "Open Settings to see what's wrong.")

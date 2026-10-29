@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		311C3A1791243E415B229FCD /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D709324DE37B31B39AAC47E /* Components.swift */; };
 		34C9BEACFFFFCD50A79B26D2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A8BE15577E1F23156A87BB9C /* Assets.xcassets */; };
+		358958FEB685AF948845D7E4 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = F41A6B7D0E6BE2AC2AD8373E /* SampleData.swift */; };
 		35B2B4063D569AE16CB6509F /* SyncCore in Frameworks */ = {isa = PBXBuildFile; productRef = A337358479BC0EF2B40B0CA7 /* SyncCore */; };
 		35E07C97A3E74D2A2185112E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBAE6B5BB598F5C799D2CFF7 /* SettingsView.swift */; };
 		3641DD8209533CBFFDA6D437 /* ReposView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49D02232187D5AFA29A2E7F /* ReposView.swift */; };
@@ -32,8 +33,9 @@
 		DC7130EB69DB11B7D4EA8069 /* MenuBarIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarIcon.swift; sourceTree = "<group>"; };
 		E0131DBCE1D116C7E20E9910 /* NASSync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NASSync.entitlements; sourceTree = "<group>"; };
 		E8A0A5B0CC515DCB8A26AC60 /* NAS Sync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NAS Sync.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		F41A6B7D0E6BE2AC2AD8373E /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
 		FE3064FB488DC7A8DD26F692 /* NASSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NASSyncApp.swift; sourceTree = "<group>"; };
-		"TEMP_A74E3B6A-4B25-4010-9BE0-48BD1142FDAA" /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
+		"TEMP_B116D2EE-28C7-4C1C-9128-8C2C00F5F9C3" /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -76,6 +78,7 @@
 				FE3064FB488DC7A8DD26F692 /* NASSyncApp.swift */,
 				2C1751DD3A0432135546368A /* PopoverView.swift */,
 				B49D02232187D5AFA29A2E7F /* ReposView.swift */,
+				F41A6B7D0E6BE2AC2AD8373E /* SampleData.swift */,
 				CBAE6B5BB598F5C799D2CFF7 /* SettingsView.swift */,
 			);
 			path = Sources;
@@ -99,10 +102,10 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
-		"TEMP_50EA96D0-D27A-444D-A7C3-C093A2EFBE33" /* App */ = {
+		"TEMP_CB15B1BD-504F-492B-B0D5-37EE910CC1B6" /* App */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_A74E3B6A-4B25-4010-9BE0-48BD1142FDAA" /* App.xcconfig */,
+				"TEMP_B116D2EE-28C7-4C1C-9128-8C2C00F5F9C3" /* App.xcconfig */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -190,6 +193,7 @@
 				7F9AB3D202CC70A3ECC5661C /* NASSyncApp.swift in Sources */,
 				4F4D01481A5497FFFCB4689B /* PopoverView.swift in Sources */,
 				3641DD8209533CBFFDA6D437 /* ReposView.swift in Sources */,
+				358958FEB685AF948845D7E4 /* SampleData.swift in Sources */,
 				35E07C97A3E74D2A2185112E /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -218,7 +222,7 @@
 		};
 		844E5D2A5A22ED5806D19835 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_A74E3B6A-4B25-4010-9BE0-48BD1142FDAA" /* App.xcconfig */;
+			baseConfigurationReference = "TEMP_B116D2EE-28C7-4C1C-9128-8C2C00F5F9C3" /* App.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -282,7 +286,7 @@
 		};
 		9391C2F78D1BB10FC6CFC467 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_A74E3B6A-4B25-4010-9BE0-48BD1142FDAA" /* App.xcconfig */;
+			baseConfigurationReference = "TEMP_B116D2EE-28C7-4C1C-9128-8C2C00F5F9C3" /* App.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

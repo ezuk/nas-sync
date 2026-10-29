@@ -27,7 +27,7 @@ final class AppModel {
     private init() {
         let store: Store
         do {
-            store = try Store()
+            store = try SampleData.isRendering ? Store(directory: SampleData.storeDirectory) : Store()
         } catch {
             let alert = NSAlert()
             alert.messageText = "NAS Sync can't open its database"
@@ -63,6 +63,14 @@ final class AppModel {
         engine.locationAllowed = location.isAllowed
         engine.start()
     }
+
+    #if DEBUG
+    func useConfigForSamples(_ url: URL) {
+        engine = Engine(configURL: url, store: engine.store)
+        engine.reloadConfig()
+        notificationsAllowed = true
+    }
+    #endif
 
     func refreshNotificationPermission(request: Bool) async {
         let center = UNUserNotificationCenter.current()

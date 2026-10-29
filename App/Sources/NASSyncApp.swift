@@ -45,7 +45,13 @@ enum WindowID {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        MainActor.assumeIsolated { AppModel.shared.start() }
+        MainActor.assumeIsolated {
+            if SampleData.isRendering {
+                SampleData.renderAll()
+                exit(0)
+            }
+            AppModel.shared.start()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

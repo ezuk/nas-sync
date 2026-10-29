@@ -80,7 +80,7 @@ struct PopoverView: View {
     }
 
     private static let steps = ["checking", "fetching", "bundling", "verifying", "compressing", "copying", "pruning"]
-    private static let stepNames = ["check", "fetch", "bundle", "verify", "compress", "copy", "prune"]
+    private static let stepNames = ["check", "fetch", "bundle", "verify", "xz", "copy", "prune"]
 
     private func stepLabel(_ step: String?) -> String {
         switch step {
@@ -100,6 +100,7 @@ struct PopoverView: View {
             ForEach(Array(Self.stepNames.enumerated()), id: \.offset) { i, name in
                 Text(name)
                     .font(.system(size: 9.5, weight: i == current ? .semibold : .regular))
+                    .lineLimit(1)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 2)
                     .foregroundStyle(i == current ? Color.white : i < current ? Color(red: 0.11, green: 0.42, blue: 0.19) : Color.secondary.opacity(0.7))
@@ -244,7 +245,7 @@ struct PopoverView: View {
     }
 
     private func githubSection(_ job: JobStatus, now: Date) -> some View {
-        let every = status.github.map { Interval(seconds: $0.every).description } ?? ""
+        let every = status.github.map { StatusText.every($0.every) } ?? ""
         let count = status.github?.repoCount ?? 0
         let last = model.engine.lastGitHubRun
         var line = StatusText.jobLine(job, now: now)

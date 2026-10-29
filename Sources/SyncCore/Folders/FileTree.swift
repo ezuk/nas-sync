@@ -162,6 +162,12 @@ public final class ListingCache: @unchecked Sendable {
         lock.unlock()
     }
 
+    public var allEntries: [FileEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.values.flatMap { $0 ?? [] }
+    }
+
     public var folderCount: Int {
         lock.lock()
         defer { lock.unlock() }

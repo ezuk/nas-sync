@@ -42,6 +42,12 @@ struct MenuBarIcon: View {
             }
             drawGlyph(color: ink, alpha: dim ? 0.4 : 1)
             let badge = NSRect(x: 14.5, y: 0.5, width: 7.5, height: 7.5)
+            if [.stale, .paused, .syncing].contains(state), let ctx = NSGraphicsContext.current {
+                // Clear a thin gap around the badge so it doesn't run into the glyph.
+                ctx.compositingOperation = .clear
+                NSBezierPath(ovalIn: badge.insetBy(dx: -1.5, dy: -1.5)).fill()
+                ctx.compositingOperation = .sourceOver
+            }
             switch state {
             case .stale:
                 NSColor.systemOrange.setFill()

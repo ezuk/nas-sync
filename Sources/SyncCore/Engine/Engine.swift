@@ -100,6 +100,13 @@ public final class Engine {
     public static let githubJob = StoreKey.githubJob
 
     public var lastGitHubRun: RunRecord? { lastRuns[Self.githubJob] }
+
+    /// Shows a fixed status without starting anything. Used to render screenshots.
+    public func showSample(_ snapshot: StatusSnapshot, lastGitHubRun: RunRecord? = nil) {
+        status = snapshot
+        if let lastGitHubRun { lastRuns[Self.githubJob] = lastGitHubRun }
+        historyVersion += 1
+    }
     static let mountRetry: TimeInterval = 300
 
     public init(configURL: URL = ConfigLoader.defaultURL(), store: Store) {
@@ -390,7 +397,7 @@ public final class Engine {
                 _ = try? store.saveRun(run)
                 historyVersion += 1
                 let last = status.jobs.compactMap(\.lastSuccess).max()
-                notify("mount", "Can't reach the NAS", "\(f.description) Nothing backed up since \(last.map { StatusText.dayAndTime($0) } ?? "the app started").")
+                notify("mount", "Can't reach the NAS", "\(f.description) Nothing backed up since \(last.map { StatusText.inSentence($0) } ?? "the app started").")
             }
         }
         evaluate()
@@ -435,7 +442,7 @@ public final class Engine {
             let due = Schedule.isDue(lastSuccess: last, every: gh.every, around: gh.around, now: now) && !failedRecently
             if requested || due, batteryAllows(Self.githubJob, power: power, now: now) {
                 store.setValue(nil, for: "githubRequested")
-                runGitHub(gh, mountPoint: mountPoint, trigger: requested ? "manual" : "scheduled (every \(gh.every))")
+                runGitHub(gh, mountPoint: mountPoint, trigger: requested ? "manual" : "scheduled (every \(StatusText.every(gh.every.seconds)))")
             }
         }
     }

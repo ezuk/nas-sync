@@ -173,7 +173,8 @@ public struct FolderSync: Sendable {
                 break
             case 23, 24:
                 out.warnings = Self.fileErrors(r.stderr)
-                out.counts.failed = max(out.warnings.count, 1)
+                if out.warnings.isEmpty { out.warnings = ["rsync couldn't copy some files (exit \(r.status))."] }
+                out.counts.failed = out.warnings.count
             default:
                 out.fatalError = Self.explain(r)
             }
@@ -264,10 +265,13 @@ public struct FolderSync: Sendable {
         return Int(line[reg.upperBound...].prefix { $0.isNumber || $0 == "," }.filter(\.isNumber))
     }
 
+    /// Per-file problems from rsync's stderr, such as unreadable files or files that vanished while copying.
     static func fileErrors(_ stderr: String) -> [String] {
-        stderr.split(separator: "\n").map(String.init).filter { $0.hasPrefix("rsync: ") }.prefix(20).map {
-            String($0.dropFirst("rsync: ".count))
-        }
+        stderr.split(separator: "\n").map(String.init).compactMap { line -> String? in
+            if line.hasPrefix("file has vanished: ") { return "Changed while copying, will retry: " + line.dropFirst("file has vanished: ".count) }
+            if line.hasPrefix("rsync: "), !line.contains("some files") { return String(line.dropFirst("rsync: ".count)) }
+            return nil
+        }.prefix(20).map { $0 }
     }
 
     /// A plain-language reason for an rsync failure.

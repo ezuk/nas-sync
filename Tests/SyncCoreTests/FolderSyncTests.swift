@@ -82,6 +82,18 @@ final class TempPair {
         #expect(FolderSync.explain(.init(status: 255, stdout: "", stderr: "")) == "Lost the connection to the NAS.")
     }
 
+    @Test func collectsFileErrors() {
+        let stderr = """
+        file has vanished: "/src/a b.txt"
+        rsync: [sender] send_files failed to open "/src/locked.txt": Permission denied (13)
+        rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1338)
+        """
+        #expect(FolderSync.fileErrors(stderr) == [
+            "Changed while copying, will retry: \"/src/a b.txt\"",
+            "[sender] send_files failed to open \"/src/locked.txt\": Permission denied (13)",
+        ])
+    }
+
     @Test func archiveFolderHasDayAndTime() {
         let date = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 29, hour: 15, minute: 30, second: 12))!
         #expect(FolderSync.archivePath(date) == "_archive/2026-10-29/153012")

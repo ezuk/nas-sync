@@ -228,3 +228,42 @@ final class TempPair {
         #expect(plan.deletedFileCount == 0)
     }
 }
+
+@Suite(.serialized) struct FolderWatcherTests {
+    @Test func reportsChangedFoldersAfterQuietPeriod() async throws {
+        let t = try TempPair()
+        try t.write("keep.txt", "K")
+        try t.write("sub/old.txt", "O")
+        let sync = t.sync()
+        _ = sync.execute(try sync.plan(scope: .full))
+
+        let received = LockedBox<[FolderWatcher.Changes]>([])
+        let watcher = FolderWatcher(source: t.source, quietPeriod: 0.5) { c in received.set(received.get() + [c]) }
+        watcher.start(since: nil)
+        try await Task.sleep(for: .milliseconds(300))
+        try t.write("sub/new.txt", "N")
+        try FileManager.default.removeItem(at: t.source.appending(path: "sub/old.txt"))
+        try t.write("top.txt", "T")
+
+        for _ in 0..<50 where received.get().isEmpty { try await Task.sleep(for: .milliseconds(100)) }
+        watcher.stop()
+        let changes = try #require(received.get().first)
+        guard case .directories(let dirs) = changes.scope else { Issue.record("expected folders, got \(changes.scope)"); return }
+        #expect(dirs.keys.contains("sub"))
+        #expect(dirs.keys.contains(""))
+        #expect(changes.eventID > 0)
+
+        let plan = try sync.plan(scope: changes.scope)
+        let out = sync.execute(plan)
+        #expect(out.counts.new == 2)
+        #expect(out.counts.archived == 1)
+        #expect(t.read("sub/new.txt") == "N")
+        #expect(!t.exists("sub/old.txt"))
+    }
+
+    @Test func relativePaths() {
+        #expect(FolderWatcher.relative("/a/b/c", root: "/a/") == "b/c")
+        #expect(FolderWatcher.relative("/a", root: "/a/") == "")
+        #expect(FolderWatcher.relative("/ab/c", root: "/a/") == nil)
+    }
+}

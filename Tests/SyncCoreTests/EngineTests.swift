@@ -11,7 +11,7 @@ private final class FakeWorld: @unchecked Sendable {
 
     init(folderSettings: String = "") throws {
         root = FileManager.default.temporaryDirectory.appending(path: "nassync-engine-\(UUID().uuidString)")
-        for dir in [source, nas.appending(path: "Backup"), state] {
+        for dir in [source, nas.appending(path: "Backup"), state, configURL.deletingLastPathComponent()] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         try """
@@ -42,7 +42,7 @@ private final class FakeWorld: @unchecked Sendable {
     var source: URL { root.appending(path: "src") }
     var nas: URL { root.appending(path: "nas") }
     var state: URL { root.appending(path: "state") }
-    var configURL: URL { root.appending(path: "config.toml") }
+    var configURL: URL { root.appending(path: "config/config.toml") }
     /// A time that has always just passed, so the nightly check doesn't interfere.
     var nightly: String {
         let c = Calendar.current.dateComponents([.hour, .minute], from: Date().addingTimeInterval(3600))
@@ -66,6 +66,42 @@ private final class FakeWorld: @unchecked Sendable {
 
     func nasFile(_ rel: String) -> String? {
         (try? Data(contentsOf: nas.appending(path: "Backup").appending(path: rel))).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Adds a folder to the end of the config, keeping the same file.
+    func appendFolder(_ name: String) throws {
+        let dir = root.appending(path: name)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = try FileHandle(forWritingTo: configURL)
+        defer { try? file.close() }
+        try file.seekToEnd()
+        try file.write(contentsOf: Data("""
+
+        [[folder]]
+        name = "\(name)"
+        source = "\(dir.path(percentEncoded: false))"
+        dest = "\(name)"
+
+        """.utf8))
+    }
+
+    /// Saves a new battery threshold. Overwrites the file in place, or replaces it when given `.atomic`.
+    func setHoldBelow(_ percent: Int, options: Data.WritingOptions = []) throws {
+        let text = try String(contentsOf: configURL, encoding: .utf8)
+        let updated = text.replacing(/hold_below_percent = \d+/, with: "hold_below_percent = \(percent)")
+        try Data(updated.utf8).write(to: configURL, options: options)
+    }
+
+    /// Descriptors open on the config file and its folder. A replaced file still reports its old path.
+    var configDescriptors: Int {
+        let folder = "\(root.lastPathComponent)/config"
+        let fds = (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd")) ?? []
+        return fds.compactMap(Int32.init).filter { fd in
+            var buffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN))
+            guard fcntl(fd, F_GETPATH, &buffer) == 0 else { return false }
+            let path = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
+            return path.hasSuffix(folder) || path.hasSuffix("\(folder)/config.toml")
+        }.count
     }
 }
 
@@ -210,5 +246,99 @@ private func makeEngine(_ world: FakeWorld) throws -> Engine {
         await waitUntil { world.nasFile("old0.txt") == nil && engine.status.state == .upToDate }
         #expect(world.nasFile("old0.txt") == nil)
         #expect(world.nasFile("keep.txt") == "K")
+    }
+
+    @Test func reloadsConfigEditedInPlace() async throws {
+        let world = try FakeWorld()
+        let engine = try makeEngine(world)
+        engine.start()
+        defer { engine.stop() }
+
+        for count in 2...4 {
+            try world.appendFolder("Extra\(count)")
+            await waitUntil(5) { engine.config?.folders.count == count }
+            #expect(engine.config?.folders.count == count)
+        }
+
+        for percent in [41, 42] {
+            try world.setHoldBelow(percent)
+            await waitUntil(5) { engine.status.holdBelowPercent == percent }
+            #expect(engine.status.holdBelowPercent == percent)
+        }
+
+        // Emptying a file only changes its attributes.
+        try Data().write(to: world.configURL)
+        await waitUntil(5) { !engine.status.configValid }
+        #expect(!engine.status.configValid)
+    }
+
+    @Test func keepsWatchingConfigAfterItIsReplaced() async throws {
+        let world = try FakeWorld()
+        let engine = try makeEngine(world)
+        engine.start()
+        defer { engine.stop() }
+
+        for round in 1...3 {
+            try world.setHoldBelow(40 + round, options: .atomic)
+            await waitUntil(5) { engine.status.holdBelowPercent == 40 + round }
+            #expect(engine.status.holdBelowPercent == 40 + round)
+
+            try world.appendFolder("Extra\(round)")
+            await waitUntil(5) { engine.config?.folders.count == 1 + round }
+            #expect(engine.config?.folders.count == 1 + round)
+        }
+
+        // This append lands before the watch can move to the new file.
+        try world.setHoldBelow(50, options: .atomic)
+        try world.appendFolder("Extra4")
+        await waitUntil(5) { engine.config?.folders.count == 5 }
+        #expect(engine.config?.folders.count == 5)
+        #expect(engine.status.holdBelowPercent == 50)
+
+        try world.appendFolder("Extra5")
+        await waitUntil(5) { engine.config?.folders.count == 6 }
+        #expect(engine.config?.folders.count == 6)
+    }
+
+    @Test func watchesConfigThatAppearsLater() async throws {
+        let world = try FakeWorld()
+        let text = try Data(contentsOf: world.configURL)
+        try FileManager.default.removeItem(at: world.configURL)
+        let engine = try makeEngine(world)
+        engine.start()
+        defer { engine.stop() }
+        #expect(!engine.status.configValid)
+
+        for _ in 1...2 {
+            try text.write(to: world.configURL)
+            await waitUntil(5) { engine.status.configValid }
+            #expect(engine.status.configValid)
+
+            try world.appendFolder("Extra")
+            await waitUntil(5) { engine.config?.folders.count == 2 }
+            #expect(engine.config?.folders.count == 2)
+
+            try FileManager.default.removeItem(at: world.configURL)
+            await waitUntil(5) { !engine.status.configValid }
+            #expect(!engine.status.configValid)
+        }
+    }
+
+    @Test func closesConfigWatchesWhenDone() async throws {
+        let world = try FakeWorld()
+        let engine = try makeEngine(world)
+        engine.start()
+        #expect(world.configDescriptors == 2)
+
+        for round in 1...5 {
+            try world.setHoldBelow(40 + round, options: .atomic)
+            await waitUntil(5) { engine.status.holdBelowPercent == 40 + round }
+        }
+        await waitUntil(2) { world.configDescriptors == 2 }
+        #expect(world.configDescriptors == 2)
+
+        engine.stop()
+        await waitUntil(2) { world.configDescriptors == 0 }
+        #expect(world.configDescriptors == 0)
     }
 }

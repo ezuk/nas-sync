@@ -121,7 +121,8 @@ public final class Engine {
     @ObservationIgnored private var checkingConnection = false
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
-    @ObservationIgnored private var configSource: DispatchSourceFileSystemObject?
+    @ObservationIgnored private var configFolderSource: DispatchSourceFileSystemObject?
+    @ObservationIgnored private var configFileSource: DispatchSourceFileSystemObject?
     @ObservationIgnored private var configReload: DispatchWorkItem?
     @ObservationIgnored private var health: [String: JobStatus.State] = [:]
     @ObservationIgnored private var connectionHealthy = true
@@ -177,7 +178,9 @@ public final class Engine {
     public func stop() {
         timer?.invalidate()
         pathMonitor?.cancel()
-        configSource?.cancel()
+        configFolderSource?.cancel()
+        configFileSource?.cancel()
+        configReload?.cancel()
         for w in watchers.values { w.stop() }
         for flag in running.values { flag.cancel() }
     }
@@ -257,21 +260,34 @@ public final class Engine {
     private func watchConfigFile() {
         let dir = configURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let fd = open(dir.path(percentEncoded: false), O_EVTONLY)
-        guard fd >= 0 else { return }
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
+        configFolderSource = makeConfigSource(path: dir.path(percentEncoded: false), events: [.write, .rename, .delete])
+        watchConfigFileContents()
+    }
+
+    /// Points the watch at the file now at the config path. `.attrib` covers emptying the file.
+    private func watchConfigFileContents() {
+        configFileSource?.cancel()
+        configFileSource = makeConfigSource(path: configURL.path(percentEncoded: false), events: [.write, .extend, .attrib, .rename, .delete])
+    }
+
+    private func makeConfigSource(path: String, events: DispatchSource.FileSystemEvent) -> DispatchSourceFileSystemObject? {
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else { return nil }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: events, queue: .main)
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.configReload?.cancel()
-                let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.reloadConfig() } }
-                self.configReload = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
-            }
+            MainActor.assumeIsolated { self?.configChanged() }
         }
         source.setCancelHandler { close(fd) }
         source.resume()
-        configSource = source
+        return source
+    }
+
+    private func configChanged() {
+        watchConfigFileContents()
+        configReload?.cancel()
+        let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.reloadConfig() } }
+        configReload = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     // MARK: Changes

@@ -54,12 +54,30 @@ public struct RunCounts: Sendable, Codable, Equatable {
     public var skipped = 0
     public var failed = 0
     public var unchanged = 0
+    /// Folders: old archive folders removed. GitHub: refs deleted from mirrors with `on_remote_delete = "prune"`.
     public var pruned = 0
+    /// GitHub: refs deleted or force-pushed at the source and kept under `refs/deleted/` in the mirror.
+    public var keptRefs = 0
     public var bytes: Int64 = 0
     /// Total files (folders) or repos (GitHub) considered.
     public var total = 0
 
     public init() {}
+
+    /// Missing counts (from runs saved by older versions) read as zero.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        new = try c.decodeIfPresent(Int.self, forKey: .new) ?? 0
+        changed = try c.decodeIfPresent(Int.self, forKey: .changed) ?? 0
+        archived = try c.decodeIfPresent(Int.self, forKey: .archived) ?? 0
+        skipped = try c.decodeIfPresent(Int.self, forKey: .skipped) ?? 0
+        failed = try c.decodeIfPresent(Int.self, forKey: .failed) ?? 0
+        unchanged = try c.decodeIfPresent(Int.self, forKey: .unchanged) ?? 0
+        pruned = try c.decodeIfPresent(Int.self, forKey: .pruned) ?? 0
+        keptRefs = try c.decodeIfPresent(Int.self, forKey: .keptRefs) ?? 0
+        bytes = try c.decodeIfPresent(Int64.self, forKey: .bytes) ?? 0
+        total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
+    }
 
     public var copied: Int { new + changed }
 }

@@ -4,9 +4,27 @@ public struct AppConfig: Sendable, Equatable {
     public var home: HomeConfig
     public var nas: NASConfig
     public var battery: BatteryConfig
+    /// Folders that are switched on. These are the ones that sync.
     public var folders: [FolderJobConfig]
     public var folderDefaults: FolderDefaults
+    /// GitHub backups, only when switched on.
     public var github: GitHubConfig?
+    /// Every `[[folder]]` in file order, including ones with `enabled = false`.
+    public var allFolders: [FolderJobConfig]
+    /// The `[github]` settings even when `enabled = false`, so the form can show them.
+    public var githubSettings: GitHubConfig?
+
+    public init(home: HomeConfig, nas: NASConfig, battery: BatteryConfig, folders: [FolderJobConfig], folderDefaults: FolderDefaults,
+                github: GitHubConfig?, allFolders: [FolderJobConfig]? = nil, githubSettings: GitHubConfig? = nil) {
+        self.home = home
+        self.nas = nas
+        self.battery = battery
+        self.folders = folders
+        self.folderDefaults = folderDefaults
+        self.github = github
+        self.allFolders = allFolders ?? folders
+        self.githubSettings = githubSettings ?? github
+    }
 }
 
 public struct HomeConfig: Sendable, Equatable {
@@ -51,6 +69,9 @@ public struct FolderDefaults: Sendable, Equatable {
     public var maxDeletePercent: Int
     public var maxDeleteFiles: Int
     public var exclude: [String]
+
+    /// Skipped in every folder when `[folders]` doesn't set `exclude`.
+    public static let builtinExclude = [".DS_Store", "._*", ".Trash", ".Trashes", "Icon\r", "*.tmp", "~$*", ".TemporaryItems", ".smbdelete*", "@eaDir", "#recycle"]
 }
 
 public struct FolderJobConfig: Sendable, Equatable, Identifiable {
@@ -58,7 +79,16 @@ public struct FolderJobConfig: Sendable, Equatable, Identifiable {
     public var source: URL
     /// Path inside the NAS share.
     public var dest: String
+    /// The shared `[folders]` patterns followed by this folder's own.
     public var exclude: [String]
+    /// Only this folder's own `exclude` patterns.
+    public var ownExclude: [String] = []
+    /// False when the folder is paused with `enabled = false`.
+    public var enabled = true
+    /// Settings this folder sets itself instead of following `[folders]`, by key (`quiet_period`, `archive_days`, ...).
+    public var overrides: Set<String> = []
+    /// Line of each key in this folder's section.
+    public var keyLines: [String: Int] = [:]
     public var archiveDays: Int
     public var staleAfter: Interval
     public var quietPeriod: Interval
@@ -85,20 +115,18 @@ public struct FolderJobConfig: Sendable, Equatable, Identifiable {
 
     public var id: String { name }
     public var excludeSet: GlobSet { GlobSet(exclude) }
-}
 
-public struct RetentionPolicy: Sendable, Equatable {
-    public var daily: Int
-    public var weekly: Int
-    public var monthly: Int
-    public var quarterly: Int
-    public var max: Int
-
-    public static let standard = RetentionPolicy(daily: 3, weekly: 1, monthly: 1, quarterly: 1, max: 6)
+    /// Keys a folder may set to override `[folders]`.
+    public static let overridableKeys = ["quiet_period", "at_most_every", "archive_days", "max_delete_percent", "max_delete_files", "stale_after"]
 }
 
 public struct GitHubConfig: Sendable, Equatable {
-    public enum NewRepos: String, Sendable { case include, ignore }
+    /// What happens to a newly found local clone. `prompt` holds it until you decide in the menu.
+    public enum NewRepos: String, Sendable, CaseIterable { case include, ignore, prompt }
+    /// What happens on the NAS to a branch or tag that was deleted at the source.
+    public enum OnRemoteDelete: String, Sendable, CaseIterable { case keep, prune }
+
+    public var enabled = true
 
     public var every: Interval
     public var around: TimeOfDay?
@@ -106,17 +134,32 @@ public struct GitHubConfig: Sendable, Equatable {
     /// Path inside the NAS share.
     public var dest: String
     public var scan: [URL]
+    /// Clones anywhere on this Mac, outside the scan folders. A GitHub remote is optional.
+    public var repos: [URL] = []
     public var newRepos: NewRepos
     public var exclude: [String]
     public var remoteOnly: [String]
     /// Owner (lowercased) to folder name. `*` is the fallback.
     public var groups: [String: String]
-    public var keep: RetentionPolicy
+    /// Owner to folder name in file order, with the owner's original case.
+    public var groupList: [(owner: String, folder: String)] = []
+    public var onRemoteDelete: OnRemoteDelete = .keep
     public var gc: Bool
     public var line: Int
     /// Line of each `exclude` entry and `remote_only` entry, for linking from the UI.
     public var excludeLine: Int?
     public var remoteOnlyLine: Int?
+
+    /// NAS folder, inside `dest`, for repos that have no GitHub remote.
+    public static let localGroup = "local"
+
+    public static func == (a: GitHubConfig, b: GitHubConfig) -> Bool {
+        a.enabled == b.enabled && a.every == b.every && a.around == b.around && a.staleAfter == b.staleAfter && a.dest == b.dest
+            && a.scan == b.scan && a.repos == b.repos && a.newRepos == b.newRepos && a.exclude == b.exclude && a.remoteOnly == b.remoteOnly
+            && a.groups == b.groups && a.groupList.map { "\($0.owner)=\($0.folder)" } == b.groupList.map { "\($0.owner)=\($0.folder)" }
+            && a.onRemoteDelete == b.onRemoteDelete && a.gc == b.gc && a.line == b.line && a.excludeLine == b.excludeLine
+            && a.remoteOnlyLine == b.remoteOnlyLine
+    }
 
     public var excludeSet: GlobSet { GlobSet(exclude) }
 
@@ -223,11 +266,11 @@ struct ConfigDecoder {
             archiveDays: fd.int("archive_days", default: 90, range: 1...36500, in: &issues),
             staleAfter: fd.interval("stale_after", default: .hours(24), in: &issues),
             quietPeriod: fd.interval("quiet_period", default: Interval(seconds: 30), in: &issues),
-            atMostEvery: fd.interval("at_most_every", default: Interval(seconds: 0), in: &issues),
+            atMostEvery: fd.interval("at_most_every", default: Interval(seconds: 0), allowOff: true, in: &issues),
             nightlyCheck: fd.timeOfDay("nightly_check", default: TimeOfDay(hour: 3, minute: 0), in: &issues),
             maxDeletePercent: fd.int("max_delete_percent", default: 20, range: 1...100, in: &issues),
             maxDeleteFiles: fd.int("max_delete_files", default: 1000, range: 1...Int.max, in: &issues),
-            exclude: fd.stringList("exclude", default: [".DS_Store", "._*", ".Trash", ".Trashes", "Icon\r", "*.tmp", "~$*", ".TemporaryItems", ".smbdelete*", "@eaDir", "#recycle"], in: &issues)
+            exclude: fd.stringList("exclude", default: FolderDefaults.builtinExclude, in: &issues)
         )
         finish(fd)
 
@@ -237,7 +280,8 @@ struct ConfigDecoder {
             let sourceText = item.string("source", required: true, in: &issues) ?? ""
             let dest = item.string("dest", required: true, in: &issues) ?? ""
             let extra = item.stringList("exclude", default: [], in: &issues)
-            let job = FolderJobConfig(
+            let enabled = item.bool("enabled", default: true, in: &issues)
+            var job = FolderJobConfig(
                 name: name,
                 source: expand(sourceText),
                 dest: normalizeDest(dest),
@@ -248,8 +292,12 @@ struct ConfigDecoder {
                 maxDeletePercent: item.int("max_delete_percent", default: defaults.maxDeletePercent, range: 1...100, in: &issues),
                 maxDeleteFiles: item.int("max_delete_files", default: defaults.maxDeleteFiles, range: 1...Int.max, in: &issues),
                 line: item.table.line,
-                atMostEvery: item.interval("at_most_every", default: defaults.atMostEvery, in: &issues)
+                atMostEvery: item.interval("at_most_every", default: defaults.atMostEvery, allowOff: true, in: &issues)
             )
+            job.ownExclude = extra
+            job.enabled = enabled
+            job.overrides = Set(FolderJobConfig.overridableKeys.filter { item.table[$0] != nil })
+            job.keyLines = Dictionary(uniqueKeysWithValues: item.table.entries.map { ($0.key, $0.node.line) })
             if !sourceText.isEmpty, !sourceText.hasPrefix("/"), !sourceText.hasPrefix("~") {
                 issue(item.line("source"), "folder '\(name)': source must be a full path or start with ~.")
             }
@@ -261,25 +309,24 @@ struct ConfigDecoder {
             folders.append(job)
         }
 
+        var githubSettings: GitHubConfig?
         var github: GitHubConfig?
         var gh = section(&r, "github", required: false)
-        if gh.present, gh.bool("enabled", default: true, in: &issues) {
-            var keepSection = gh.subsection("keep")
-            let keep = RetentionPolicy(
-                daily: keepSection.int("daily", default: 3, range: 0...1000, in: &issues),
-                weekly: keepSection.int("weekly", default: 1, range: 0...1000, in: &issues),
-                monthly: keepSection.int("monthly", default: 1, range: 0...1000, in: &issues),
-                quarterly: keepSection.int("quarterly", default: 1, range: 0...1000, in: &issues),
-                max: keepSection.int("max", default: 6, range: 1...1000, in: &issues)
-            )
-            finish(keepSection)
+        if gh.present {
+            let enabled = gh.bool("enabled", default: true, in: &issues)
+            if let keep = gh.raw("keep") {
+                issues.append(ConfigIssue(severity: .warning, line: keep.line,
+                                          message: "[github.keep] is no longer used. Each repo is now one git mirror on the NAS, so there are no older copies to keep. Delete the section, and use on_remote_delete to choose what happens to deleted branches."))
+            }
 
             var groups: [String: String] = [:]
+            var groupList: [(owner: String, folder: String)] = []
             if let node = gh.raw("groups") {
                 if case .table(let t) = node.value {
                     for (k, v) in t.entries {
                         if case .string(let s) = v.value, !s.isEmpty {
                             groups[k.lowercased()] = s
+                            groupList.append((k, s))
                         } else {
                             issue(v.line, "github.groups.\(k) must be a folder name in quotes.")
                         }
@@ -288,11 +335,19 @@ struct ConfigDecoder {
                     issue(node.line, "github.groups must be a table like { \"owner\" = \"folder\", \"*\" = \"other\" }.")
                 }
             }
+            for (owner, folder) in groupList where folder.lowercased() == GitHubConfig.localGroup && owner != "*" {
+                issue(gh.line("groups"), "github.groups: '\(folder)' is kept for repos with no GitHub remote. Use another folder name for \(owner).")
+            }
 
-            let newReposText = gh.string("new_repos", required: false, in: &issues) ?? "include"
+            let newReposText = gh.string("new_repos", required: false, in: &issues) ?? GitHubConfig.NewRepos.prompt.rawValue
             let newRepos = GitHubConfig.NewRepos(rawValue: newReposText)
             if newRepos == nil {
-                issue(gh.line("new_repos"), "github.new_repos must be \"include\" or \"ignore\".")
+                issue(gh.line("new_repos"), "github.new_repos must be \"prompt\", \"include\" or \"ignore\".")
+            }
+            let onDeleteText = gh.string("on_remote_delete", required: false, in: &issues) ?? GitHubConfig.OnRemoteDelete.keep.rawValue
+            let onDelete = GitHubConfig.OnRemoteDelete(rawValue: onDeleteText)
+            if onDelete == nil {
+                issue(gh.line("on_remote_delete"), "github.on_remote_delete must be \"keep\" or \"prune\".")
             }
             let dest = gh.string("dest", required: false, in: &issues) ?? "github-backups"
             checkDest(dest, label: "github", line: gh.line("dest"))
@@ -300,29 +355,39 @@ struct ConfigDecoder {
             for repo in remoteOnly where repo.split(separator: "/").count != 2 {
                 issue(gh.line("remote_only"), "github.remote_only: '\(repo)' should look like owner/repo.")
             }
-            github = GitHubConfig(
+            let repoPaths = gh.stringList("repos", default: [], in: &issues)
+            for p in repoPaths where !p.hasPrefix("/") && !p.hasPrefix("~") {
+                issue(gh.line("repos"), "github.repos: '\(p)' must be a full path or start with ~.")
+            }
+            var settings = GitHubConfig(
                 every: gh.interval("every", default: .hours(24), in: &issues),
                 around: gh.optionalTimeOfDay("around", in: &issues),
                 staleAfter: gh.interval("stale_after", default: .hours(48), in: &issues),
                 dest: normalizeDest(dest),
                 scan: gh.stringList("scan", default: [], in: &issues).map(expand),
-                newRepos: newRepos ?? .include,
+                newRepos: newRepos ?? .prompt,
                 exclude: gh.stringList("exclude", default: [], in: &issues),
                 remoteOnly: remoteOnly,
                 groups: groups,
-                keep: keep,
                 gc: gh.bool("gc", default: false, in: &issues),
                 line: gh.table.line,
                 excludeLine: gh.line("exclude"),
                 remoteOnlyLine: gh.line("remote_only")
             )
+            settings.enabled = enabled
+            settings.repos = repoPaths.map(expand)
+            settings.groupList = groupList
+            settings.onRemoteDelete = onDelete ?? .keep
+            githubSettings = settings
+            if enabled { github = settings }
         }
         finish(gh)
         finish(r)
 
-        checkOverlaps(folders: folders, github: github)
+        // Paused folders and switched-off GitHub backups still own their NAS folder.
+        checkOverlaps(folders: folders, github: githubSettings)
 
-        if folders.isEmpty && github == nil {
+        if !folders.contains(where: \.enabled) && github == nil {
             issues.append(ConfigIssue(severity: .warning, line: nil, message: "Nothing to back up yet. Add a [[folder]] or a [github] section."))
         }
 
@@ -330,9 +395,11 @@ struct ConfigDecoder {
             home: HomeConfig(wifi: wifi),
             nas: NASConfig(ssh: ssh, port: port, path: nasPath, rsync: rsyncPath, remoteRsync: remoteRsync),
             battery: BatteryConfig(holdBelowPercent: holdBelow, butNotLongerThan: maxDelay),
-            folders: folders,
+            folders: folders.filter(\.enabled),
             folderDefaults: defaults,
-            github: github
+            github: github,
+            allFolders: folders,
+            githubSettings: githubSettings
         )
     }
 
@@ -490,10 +557,15 @@ struct Section {
         return v
     }
 
-    mutating func interval(_ key: String, default value: Interval, in issues: inout [ConfigIssue]) -> Interval {
+    /// With `allowOff`, `"off"` is accepted and read as zero, meaning no limit.
+    mutating func interval(_ key: String, default value: Interval, allowOff: Bool = false, in issues: inout [ConfigIssue]) -> Interval {
         guard let node = raw(key) else { return value }
+        if allowOff, case .string(let s) = node.value, s.trimmingCharacters(in: .whitespaces).lowercased() == "off" {
+            return Interval(seconds: 0)
+        }
         guard case .string(let s) = node.value, let v = Interval(parsing: s) else {
-            issues.append(ConfigIssue(severity: .error, line: node.line, message: "'\(path(key))' should be a duration in quotes, like \"30s\", \"12h\" or \"2d\"."))
+            let example = allowOff ? "\"30s\", \"12h\", \"2d\" or \"off\"" : "\"30s\", \"12h\" or \"2d\""
+            issues.append(ConfigIssue(severity: .error, line: node.line, message: "'\(path(key))' should be a duration in quotes, like \(example)."))
             return value
         }
         return v

@@ -27,17 +27,19 @@ public struct Git: Sendable {
         public var stderr: String
     }
 
-    /// Runs git and returns stdout, throwing on a non-zero exit.
+    /// Runs git and returns stdout, throwing on a non-zero exit. `input` is a file fed to git's standard input.
     @discardableResult
-    public func run(_ args: [String], in directory: URL? = nil, timeout: TimeInterval? = nil, isCancelled: @Sendable () -> Bool = { false }) throws -> String {
-        let r = try runRaw(args, in: directory, timeout: timeout, isCancelled: isCancelled)
+    public func run(_ args: [String], in directory: URL? = nil, timeout: TimeInterval? = nil, input: URL? = nil,
+                    isCancelled: @Sendable () -> Bool = { false }) throws -> String {
+        let r = try runRaw(args, in: directory, timeout: timeout, input: input, isCancelled: isCancelled)
         guard r.status == 0 else {
             throw GitError(command: args.first ?? "", status: r.status, output: r.stderr.isEmpty ? r.stdout : r.stderr)
         }
         return r.stdout
     }
 
-    public func runRaw(_ args: [String], in directory: URL? = nil, timeout: TimeInterval? = nil, isCancelled: @Sendable () -> Bool = { false }) throws -> Result {
+    public func runRaw(_ args: [String], in directory: URL? = nil, timeout: TimeInterval? = nil, input: URL? = nil,
+                       isCancelled: @Sendable () -> Bool = { false }) throws -> Result {
         let process = Process()
         process.executableURL = executable
         process.arguments = (directory.map { ["-C", $0.path(percentEncoded: false)] } ?? []) + args
@@ -51,7 +53,7 @@ public struct Git: Sendable {
         let outPipe = Pipe(), errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-        process.standardInput = FileHandle.nullDevice
+        process.standardInput = try input.map { try FileHandle(forReadingFrom: $0) } ?? FileHandle.nullDevice
 
         let outData = LockedData(), errData = LockedData()
         outPipe.fileHandleForReading.readabilityHandler = { h in outData.append(h.availableData) }

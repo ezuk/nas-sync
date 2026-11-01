@@ -369,14 +369,18 @@ struct RunDetailView: View {
                 KPI(value: c.unchanged.formatted(), label: "Unchanged")
                 KPI(value: c.failed.formatted(), label: "Failed", color: c.failed > 0 ? Palette.red : .primary)
                 KPI(value: Format.bytes(c.bytes), label: "Sent to NAS")
-                KPI(value: c.pruned.formatted(), label: "Pruned")
+                if c.pruned > 0 {
+                    KPI(value: c.pruned.formatted(), label: "Deleted refs pruned")
+                } else {
+                    KPI(value: c.keptRefs.formatted(), label: "Deleted refs kept")
+                }
             }
             .padding(.bottom, 18)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 0) {
                 GridRow {
                     Text("Repo")
                     Text("What changed")
-                    Text("Archive").gridColumnAlignment(.trailing)
+                    Text("On NAS").gridColumnAlignment(.trailing)
                     Text("Result")
                 }
                 .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
@@ -388,7 +392,7 @@ struct RunDetailView: View {
                 }
             }
             footer(remaining: (interesting.count + unchanged.count) - shown.count,
-                   revealPath: model.engine.config?.github.map { "\($0.dest)/bundles" })
+                   revealPath: model.engine.config?.github.map { "\($0.dest)/\(GitHubBackup.mirrorsFolder)" })
             if showTimings, !run.stepTimings.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(run.stepTimings.sorted { $0.value > $1.value }, id: \.key) { step, secs in
@@ -416,7 +420,7 @@ struct RunDetailView: View {
             switch item.action {
             case .new, .changed: Tag(text: run.trigger.contains("dry run") ? "Would back up" : "On NAS", style: .new)
             case .failed: Tag(text: "Failed", style: .bad)
-            case .skipped: Tag(text: "Skipped", style: .same)
+            case .skipped: Tag(text: detail.contains("waiting for you") ? "Waiting" : "Skipped", style: .same)
             default: Tag(text: "Unchanged", style: .same)
             }
         }

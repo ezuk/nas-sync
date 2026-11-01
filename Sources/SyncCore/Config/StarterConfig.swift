@@ -36,24 +36,39 @@ public enum StarterConfig {
         source = "~/Documents"
         dest = "Mac/Documents"           # folder inside path on the NAS
         # exclude = ["**/node_modules"]  # added to the defaults
+        # enabled = false                # pauses this folder without removing it
 
         # [github]
+        # enabled = true                  # false pauses repo backups and keeps these settings
         # every = "24h"
         # around = "03:00"                # preferred time; catches up if missed
         # dest = "github-backups"
         # scan = ["~/Documents/GitHub"]   # local clones found here
-        # new_repos = "include"           # or "ignore"
+        # repos = []                      # clones outside the scan folders; a GitHub remote is optional
+        # new_repos = "prompt"            # ask in the menu; or "include" or "ignore"
         # exclude = ["someone/big-fork", "vendor/*"]
         # remote_only = []                # owner/repo with no local clone
         # groups = { "*" = "other" }      # owner to NAS folder
-        #
-        # [github.keep]
-        # daily = 3
-        # weekly = 1
-        # monthly = 1
-        # quarterly = 1
-        # max = 6
+        # on_remote_delete = "keep"       # branches deleted at the source stay on the NAS; or "prune"
 
         """
+    }
+
+    /// The file the Settings window starts from on first launch: the starter file with the NAS login and
+    /// base folder left for you to fill in, and no folders yet. It isn't saved until it's valid.
+    public static func setupText(wifi: String) -> String {
+        var lines = text(wifi: wifi).components(separatedBy: "\n")
+        lines = lines.map { line in
+            if line.hasPrefix("ssh = ") { return "# ssh = \"me@nas.local\"           # SSH login; set up key login with ssh-copy-id" }
+            if line.hasPrefix("path = ") { return "# path = \"/volume1/homes/me\"       # base folder on the NAS; every dest is inside it" }
+            return line
+        }
+        // Drop the sample folder; the form adds real ones.
+        if let start = lines.firstIndex(of: "[[folder]]") {
+            var end = start + 1
+            while end < lines.count, !lines[end].isEmpty { end += 1 }
+            lines.removeSubrange(start..<min(end + 1, lines.count))
+        }
+        return lines.joined(separator: "\n")
     }
 }

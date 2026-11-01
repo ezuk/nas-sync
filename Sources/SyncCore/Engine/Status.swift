@@ -14,7 +14,7 @@ public struct JobProgress: Sendable, Codable, Equatable {
     public var current: String
     /// GitHub: the pipeline step of the current repo. Folders: comparing or copying.
     public var step: String?
-    /// GitHub only: repos that needed a new archive so far.
+    /// GitHub only: repos whose mirror was updated so far.
     public var changedSoFar: Int?
     public var started: Date
 

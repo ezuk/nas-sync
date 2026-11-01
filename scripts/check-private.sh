@@ -1,12 +1,12 @@
 #!/bin/bash
 # Blocks commits that contain personal strings.
-# Patterns are read from .private-patterns (one extended regex per line, gitignored).
+# Patterns are read from .private-patterns in the main checkout (one extended regex per line, gitignored).
 # Install: ln -s ../../scripts/check-private.sh .git/hooks/pre-commit
 
 set -euo pipefail
 
-root="$(git rev-parse --show-toplevel)"
-patterns="$root/.private-patterns"
+common="$(git rev-parse --path-format=absolute --git-common-dir)"
+patterns="$(dirname "$common")/.private-patterns"
 
 if [[ ! -f "$patterns" ]]; then
   exit 0

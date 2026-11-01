@@ -8,7 +8,7 @@ public enum RepoSource: String, Sendable, Codable {
 public enum RepoStatus: String, Sendable, Codable {
     case ok
     case failed
-    /// The local clone disappeared from the scan folders.
+    /// The local clone disappeared, or the repo is no longer in the config.
     case missingLocally
     /// GitHub says the repository doesn't exist (any more).
     case goneFromGitHub
@@ -16,20 +16,29 @@ public enum RepoStatus: String, Sendable, Codable {
 }
 
 /// What the app remembers about one repo between runs.
+///
+/// Stored as JSON. Records written by older versions (which kept dated archives) still decode: their archive
+/// fields are ignored and the mirror fields start empty.
 public struct RepoRecord: Sendable, Codable, Equatable, Identifiable {
+    /// `owner/repo`, or the folder name for a clone with no GitHub remote.
     public var fullName: String
     public var source: RepoSource
     public var localPath: String?
-    /// Ref name to commit, as of the newest archive confirmed on the NAS.
+    /// Ref name to commit, as of the mirror last copied to the NAS.
     public var refs: [String: String]
     public var fingerprint: String?
     public var lastChangeSeen: Date?
-    public var newestArchive: Date?
-    public var newestArchiveName: String?
-    public var newestArchiveSize: Int64?
-    public var archiveCount: Int
-    /// Archive dates kept on the NAS, newest first.
-    public var archiveDates: [Date]
+    /// When the mirror on the NAS was last updated.
+    public var mirrorUpdated: Date?
+    /// Where the mirror is, relative to `<dest>/mirrors` on the NAS, like `acme/app.git`.
+    public var mirrorPath: String?
+    /// Size of the mirror on the NAS.
+    public var sizeOnNAS: Int64?
+    /// Refs kept in the mirror after they were deleted or force-pushed at the source, like
+    /// `refs/deleted/2026-11-01/heads/fix/x`.
+    public var deletedRefsKept: [String]
+    /// False for a clone with no GitHub remote: the NAS has the only other copy.
+    public var hasGitHubRemote: Bool
     public var status: RepoStatus
     public var message: String?
     public var firstSeen: Date
@@ -38,16 +47,39 @@ public struct RepoRecord: Sendable, Codable, Equatable, Identifiable {
 
     public var id: String { fullName }
 
-    public init(fullName: String, source: RepoSource, localPath: String?, firstSeen: Date) {
+    /// `https://github.com/owner/repo`, when the repo is on GitHub.
+    public var githubURL: URL? { hasGitHubRemote ? URL(string: "https://github.com/\(fullName)") : nil }
+
+    public init(fullName: String, source: RepoSource, localPath: String?, firstSeen: Date, hasGitHubRemote: Bool = true) {
         self.fullName = fullName
         self.source = source
         self.localPath = localPath
         refs = [:]
-        archiveCount = 0
-        archiveDates = []
+        deletedRefsKept = []
+        self.hasGitHubRemote = hasGitHubRemote
         status = .ok
         self.firstSeen = firstSeen
         usesLFS = false
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fullName = try c.decode(String.self, forKey: .fullName)
+        source = try c.decodeIfPresent(RepoSource.self, forKey: .source) ?? .localClone
+        localPath = try c.decodeIfPresent(String.self, forKey: .localPath)
+        refs = try c.decodeIfPresent([String: String].self, forKey: .refs) ?? [:]
+        fingerprint = try c.decodeIfPresent(String.self, forKey: .fingerprint)
+        lastChangeSeen = try c.decodeIfPresent(Date.self, forKey: .lastChangeSeen)
+        mirrorUpdated = try c.decodeIfPresent(Date.self, forKey: .mirrorUpdated)
+        mirrorPath = try c.decodeIfPresent(String.self, forKey: .mirrorPath)
+        sizeOnNAS = try c.decodeIfPresent(Int64.self, forKey: .sizeOnNAS)
+        deletedRefsKept = try c.decodeIfPresent([String].self, forKey: .deletedRefsKept) ?? []
+        hasGitHubRemote = try c.decodeIfPresent(Bool.self, forKey: .hasGitHubRemote) ?? fullName.contains("/")
+        status = (try? c.decodeIfPresent(RepoStatus.self, forKey: .status)) ?? .ok
+        message = try c.decodeIfPresent(String.self, forKey: .message)
+        firstSeen = try c.decodeIfPresent(Date.self, forKey: .firstSeen) ?? Date()
+        unpushedCommits = try c.decodeIfPresent(Int.self, forKey: .unpushedCommits)
+        usesLFS = try c.decodeIfPresent(Bool.self, forKey: .usesLFS) ?? false
     }
 }
 
@@ -243,4 +275,6 @@ public enum StoreKey {
     public static func fullCheckAttempt(_ job: String) -> String { "fullCheckAttempt.\(job)" }
     public static func lastResult(_ job: String) -> String { "lastResult.\(job)" }
     public static let githubJob = "GitHub repos"
+    /// Newly found repos, one per line: waiting for a decision with `new_repos = "prompt"`, otherwise just reported.
+    public static let newRepos = "newRepos"
 }

@@ -54,10 +54,33 @@ import Testing
         var repo = RepoRecord(fullName: "o/r", source: .localClone, localPath: "/x", firstSeen: now)
         repo.refs = ["refs/heads/main": "abc"]
         try store.saveRepo(repo)
-        repo.archiveCount = 2
+        repo.sizeOnNAS = 2048
+        repo.mirrorPath = "o/r.git"
+        repo.deletedRefsKept = ["refs/deleted/2026-11-01/heads/x"]
         try store.saveRepo(repo)
         #expect(store.repos() == [repo])
         try store.deleteRepo("o/r")
         #expect(store.repos().isEmpty)
+    }
+
+    @Test func decodesRecordsFromArchiveVersion() throws {
+        // A record saved by the version that kept dated .bundle.xz archives.
+        let old = """
+        {"fullName":"o/r","source":"localClone","localPath":"/x","refs":{"refs/heads/main":"abc"},"fingerprint":"f",
+         "lastChangeSeen":1000,"newestArchive":900,"newestArchiveName":"260101-o-r.bundle.xz","newestArchiveSize":12,
+         "archiveCount":3,"archiveDates":[900,800],"status":"ok","firstSeen":500,"usesLFS":false}
+        """
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .secondsSince1970
+        let r = try d.decode(RepoRecord.self, from: Data(old.utf8))
+        #expect(r.fullName == "o/r")
+        #expect(r.refs == ["refs/heads/main": "abc"])
+        #expect(r.fingerprint == "f")
+        #expect(r.hasGitHubRemote)
+        #expect(r.mirrorPath == nil && r.sizeOnNAS == nil && r.mirrorUpdated == nil)
+        #expect(r.deletedRefsKept.isEmpty)
+
+        let counts = try JSONDecoder().decode(RunCounts.self, from: Data(#"{"new":1,"changed":2,"archived":0,"skipped":0,"failed":0,"unchanged":3,"pruned":4,"bytes":5,"total":6}"#.utf8))
+        #expect(counts.pruned == 4 && counts.keptRefs == 0 && counts.total == 6)
     }
 }

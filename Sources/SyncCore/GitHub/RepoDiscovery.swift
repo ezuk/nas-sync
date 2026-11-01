@@ -1,22 +1,33 @@
 import Foundation
 
-/// A GitHub repository to back up.
+/// A git repository to back up: a clone on this Mac (with or without a GitHub remote) or a GitHub repo
+/// listed in `remote_only`.
 public struct RepoTarget: Sendable, Equatable {
+    /// GitHub owner. Empty for a clone with no GitHub remote.
     public var owner: String
+    /// GitHub repo name, or the folder name for a clone with no GitHub remote.
     public var name: String
     public var source: RepoSource
     /// Working folder of a local clone.
     public var localPath: URL?
+    /// The GitHub remote URL. Empty for a clone with no GitHub remote.
     public var remoteURL: String
+    /// True for clones listed in `github.repos`, which are always backed up, even with `new_repos = "prompt"`.
+    public var isListed: Bool
 
-    public var fullName: String { "\(owner)/\(name)" }
+    /// `owner/repo`, or just the folder name for a clone with no GitHub remote.
+    public var fullName: String { owner.isEmpty ? name : "\(owner)/\(name)" }
+    public var hasGitHubRemote: Bool { !owner.isEmpty }
+    /// `https://github.com/owner/repo`, when the repo is on GitHub.
+    public var githubURL: URL? { hasGitHubRemote ? URL(string: "https://github.com/\(fullName)") : nil }
 
-    public init(owner: String, name: String, source: RepoSource, localPath: URL?, remoteURL: String) {
+    public init(owner: String, name: String, source: RepoSource, localPath: URL?, remoteURL: String, isListed: Bool = false) {
         self.owner = owner
         self.name = name
         self.source = source
         self.localPath = localPath
         self.remoteURL = remoteURL
+        self.isListed = isListed
     }
 }
 
@@ -82,7 +93,8 @@ public enum RepoDiscovery {
 
     /// The GitHub remote of a working folder, preferring `origin`.
     public static func githubRemote(of repo: URL) -> (owner: String, repo: String, url: String)? {
-        guard let text = try? String(contentsOf: repo.appending(path: ".git/config"), encoding: .utf8) else { return nil }
+        guard let gitDir = gitDirectory(of: repo),
+              let text = try? String(contentsOf: gitDir.appending(path: "config"), encoding: .utf8) else { return nil }
         var remotes: [(name: String, url: String)] = []
         var current: String?
         for raw in text.split(whereSeparator: \.isNewline) {
@@ -107,32 +119,67 @@ public enum RepoDiscovery {
         return nil
     }
 
-    /// Local clones plus remote-only repos, minus excluded ones. The first clone found wins for duplicates.
+    /// The folder holding a working folder's repository config: `.git`, or for a worktree or submodule (where
+    /// `.git` is a file), the folder it points to, or that folder's common folder.
+    static func gitDirectory(of repo: URL) -> URL? {
+        let fm = FileManager.default
+        let dotGit = repo.appending(path: ".git")
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: dotGit.path(percentEncoded: false), isDirectory: &isDir) else { return nil }
+        if isDir.boolValue { return dotGit }
+        guard let text = try? String(contentsOf: dotGit, encoding: .utf8),
+              let line = text.split(whereSeparator: \.isNewline).first, line.hasPrefix("gitdir:") else { return nil }
+        let path = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+        var dir = path.hasPrefix("/") ? URL(filePath: path, directoryHint: .isDirectory) : repo.appending(path: path, directoryHint: .isDirectory)
+        if let common = try? String(contentsOf: dir.appending(path: "commondir"), encoding: .utf8) {
+            let c = common.trimmingCharacters(in: .whitespacesAndNewlines)
+            dir = c.hasPrefix("/") ? URL(filePath: c, directoryHint: .isDirectory) : dir.appending(path: c, directoryHint: .isDirectory)
+        }
+        return dir.standardizedFileURL
+    }
+
+    /// True when `dir` is a git working folder (it has a `.git` folder or file).
+    public static func isWorkingFolder(_ dir: URL) -> Bool {
+        FileManager.default.fileExists(atPath: dir.appending(path: ".git").path(percentEncoded: false))
+    }
+
+    /// Everything the config backs up, minus excluded repos, without changing anything: clones with a GitHub remote
+    /// under the scan folders, then the clones listed in `repos` (a GitHub remote is optional there), then
+    /// `remote_only`. The first one found wins for duplicates. Clones in `repos` that don't exist are left out.
     public static func targets(config: GitHubConfig) -> (targets: [RepoTarget], excluded: [RepoTarget]) {
         var byName: [String: RepoTarget] = [:]
         var order: [String] = []
-        for dir in findRepos(in: config.scan) {
-            guard let r = githubRemote(of: dir) else { continue }
-            let t = RepoTarget(owner: r.owner, name: r.repo, source: .localClone, localPath: dir, remoteURL: r.url)
+        func add(_ t: RepoTarget) {
             let key = t.fullName.lowercased()
             if byName[key] == nil {
                 byName[key] = t
                 order.append(key)
             }
         }
+        for dir in findRepos(in: config.scan) {
+            guard let r = githubRemote(of: dir) else { continue }
+            add(RepoTarget(owner: r.owner, name: r.repo, source: .localClone, localPath: dir, remoteURL: r.url))
+        }
+        var listed: Set<String> = []
+        for dir in config.repos where isWorkingFolder(dir) {
+            listed.insert(dir.standardizedFileURL.path(percentEncoded: false))
+            if let r = githubRemote(of: dir) {
+                add(RepoTarget(owner: r.owner, name: r.repo, source: .localClone, localPath: dir, remoteURL: r.url, isListed: true))
+            } else {
+                add(RepoTarget(owner: "", name: dir.standardizedFileURL.lastPathComponent, source: .localClone, localPath: dir, remoteURL: "", isListed: true))
+            }
+        }
         for full in config.remoteOnly {
             let parts = full.split(separator: "/").map(String.init)
             guard parts.count == 2 else { continue }
-            let key = full.lowercased()
-            if byName[key] == nil {
-                byName[key] = RepoTarget(owner: parts[0], name: parts[1], source: .remoteOnly, localPath: nil, remoteURL: GitHubRemote.sshURL(full))
-                order.append(key)
-            }
+            add(RepoTarget(owner: parts[0], name: parts[1], source: .remoteOnly, localPath: nil, remoteURL: GitHubRemote.sshURL(full)))
         }
         let globs = config.excludeSet
         var targets: [RepoTarget] = [], excluded: [RepoTarget] = []
         for key in order {
-            let t = byName[key]!
+            var t = byName[key]!
+            // A clone found in a scan folder that is also listed in `repos` counts as listed.
+            if let path = t.localPath?.standardizedFileURL.path(percentEncoded: false), listed.contains(path) { t.isListed = true }
             if globs.matches(t.fullName) || globs.matches(t.fullName.lowercased()) { excluded.append(t) } else { targets.append(t) }
         }
         return (targets, excluded)

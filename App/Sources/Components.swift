@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SyncCore
 
@@ -8,6 +9,21 @@ enum Palette {
     static let blue = Color(red: 0.039, green: 0.424, blue: 1.0)
     static let grey = Color(red: 0.557, green: 0.557, blue: 0.576)
     static let purple = Color(red: 0.478, green: 0.110, blue: 0.455)
+
+    static let errorText = Color(light: Color(red: 0.56, green: 0.11, blue: 0.09), dark: Color(red: 1, green: 0.62, blue: 0.58))
+    static let warningText = Color(light: Color(red: 0.48, green: 0.29, blue: 0), dark: Color(red: 1, green: 0.78, blue: 0.42))
+    static let tomlHeader = Color(light: Color(red: 0.04, green: 0.31, blue: 0.47), dark: Color(red: 0.47, green: 0.76, blue: 0.96))
+    static let tomlKey = Color(light: Color(red: 0.61, green: 0.14, blue: 0.58), dark: Color(red: 0.91, green: 0.62, blue: 0.89))
+    static let tomlString = Color(light: Color(red: 0.77, green: 0.10, blue: 0.09), dark: Color(red: 1, green: 0.57, blue: 0.52))
+}
+
+extension Color {
+    /// A color with separate values for light and dark mode.
+    init(light: Color, dark: Color) {
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            NSColor(appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light)
+        })
+    }
 }
 
 struct StatusDot: View {

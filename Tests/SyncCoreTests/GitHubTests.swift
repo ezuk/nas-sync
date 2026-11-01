@@ -3,73 +3,9 @@ import Testing
 @testable import SyncCore
 
 private func day(_ y: Int, _ m: Int, _ d: Int) -> Date {
-    ArchiveNaming.calendar.date(from: DateComponents(year: y, month: m, day: d))!
-}
-
-private func archives(_ dates: [Date]) -> [ArchiveFile] {
-    dates.map { ArchiveFile(name: ArchiveNaming.name(owner: "org", repo: "repo", date: $0), date: $0) }
-}
-
-@Suite struct RetentionTests {
-    @Test func naming() {
-        #expect(ArchiveNaming.name(owner: "MyOrg", repo: "My-Repo", date: day(2026, 4, 3)) == "260403-MyOrg-My-Repo.bundle.xz")
-        #expect(ArchiveNaming.date(fromName: "260403-org-repo.bundle.xz") == day(2026, 4, 3))
-        #expect(ArchiveNaming.date(fromName: "invalid.bundle.xz") == nil)
-        #expect(ArchiveNaming.date(fromName: "261340-org-repo.bundle.xz") == nil)
-        #expect(ArchiveNaming.date(fromName: "260231-org-repo.bundle.xz") == nil)
-    }
-
-    @Test func recentArchivesAreKept() {
-        let r = Retention.apply(archives([day(2026, 4, 3), day(2026, 4, 2)]), policy: .standard, now: day(2026, 4, 3))
-        #expect(r.keep.count == 2)
-        #expect(r.delete.isEmpty)
-    }
-
-    @Test func dailyKeepsNewest() {
-        let dates = (1...5).reversed().map { day(2026, 4, $0) }
-        let policy = RetentionPolicy(daily: 2, weekly: 0, monthly: 0, quarterly: 0, max: 10)
-        let r = Retention.apply(archives(dates), policy: policy, now: day(2026, 4, 5))
-        #expect(r.keep.map(\.name) == ["260405-org-repo.bundle.xz", "260404-org-repo.bundle.xz"])
-    }
-
-    @Test func weeklyBucket() {
-        let dates = [day(2026, 4, 20), day(2026, 4, 19), day(2026, 4, 18), day(2026, 4, 10), day(2026, 4, 3)]
-        let policy = RetentionPolicy(daily: 3, weekly: 2, monthly: 0, quarterly: 0, max: 10)
-        let r = Retention.apply(archives(dates), policy: policy, now: day(2026, 4, 20))
-        #expect(r.keep.count == 5)
-    }
-
-    @Test func neverDeletesEverything() {
-        let policy = RetentionPolicy(daily: 3, weekly: 1, monthly: 1, quarterly: 0, max: 6)
-        let r = Retention.apply(archives([day(2025, 1, 1)]), policy: policy, now: day(2026, 4, 3))
-        #expect(r.keep.count == 1)
-        #expect(r.delete.isEmpty)
-    }
-
-    @Test func maxCap() {
-        let dates = (0..<10).map { day(2026, 4, 30 - $0) }
-        let policy = RetentionPolicy(daily: 10, weekly: 5, monthly: 5, quarterly: 5, max: 4)
-        let r = Retention.apply(archives(dates), policy: policy, now: day(2026, 4, 30))
-        #expect(r.keep.count == 4)
-        #expect(r.keep.first?.date == day(2026, 4, 30))
-    }
-
-    @Test func fullScenario() {
-        let dates = [day(2026, 4, 3), day(2026, 4, 2), day(2026, 4, 1), day(2026, 3, 25), day(2026, 3, 18),
-                     day(2026, 2, 15), day(2026, 1, 20), day(2025, 12, 1), day(2025, 6, 1)]
-        let r = Retention.apply(archives(dates), policy: .standard, now: day(2026, 4, 3))
-        #expect(r.keep.count <= 6)
-        #expect(r.keep.count + r.delete.count == dates.count)
-        #expect(r.delete.contains { $0.date == day(2025, 6, 1) })
-        #expect(r.keep.contains { $0.date == day(2026, 3, 25) })
-    }
-
-    @Test func pythonWeekNumbers() {
-        // 2026-01-01 is a Thursday: week 0 until the first Monday (Jan 5).
-        #expect(Retention.weekKey(day(2026, 1, 1)) == "2026-0")
-        #expect(Retention.weekKey(day(2026, 1, 5)) == "2026-1")
-        #expect(Retention.weekKey(day(2026, 4, 3)) == "2026-13")
-    }
+    var c = Calendar(identifier: .gregorian)
+    c.timeZone = .current
+    return c.date(from: DateComponents(year: y, month: m, day: d, hour: 12))!
 }
 
 @Suite struct RemoteParsingTests {
@@ -81,6 +17,28 @@ private func archives(_ dates: [Date]) -> [ArchiveFile] {
         #expect(GitHubRemote.parse("https://token@github.com/owner/repo.git")! == ("owner", "repo"))
         #expect(GitHubRemote.parse("git@gitlab.com:owner/repo.git") == nil)
         #expect(GitHubRemote.parse("https://github.com/owner") == nil)
+    }
+}
+
+@Suite struct MirrorNamingTests {
+    @Test func deletedRefNamesNeverClash() {
+        var existing: Set<String> = ["refs/heads/fix", "refs/deleted/2026-11-01/heads/old"]
+        #expect(GitHubBackup.deletedName(for: "refs/heads/fix", day: "2026-11-01", existing: &existing) == "refs/deleted/2026-11-01/heads/fix")
+        // Same branch deleted twice on one day.
+        #expect(GitHubBackup.deletedName(for: "refs/heads/fix", day: "2026-11-01", existing: &existing) == "refs/deleted/2026-11-01-2/heads/fix")
+        // Would be a folder and a ref at once.
+        #expect(GitHubBackup.deletedName(for: "refs/heads/old/x", day: "2026-11-01", existing: &existing) == "refs/deleted/2026-11-01-2/heads/old/x")
+        #expect(GitHubBackup.deletedName(for: "refs/tags/v1", day: "2026-11-02", existing: &existing) == "refs/deleted/2026-11-02/tags/v1")
+    }
+
+    @Test func rsyncStats() {
+        #expect(NAS.transferredBytes("Number of files: 3\nTotal transferred file size: 1,234 bytes\n") == 1234)
+        #expect(NAS.transferredBytes("nothing") == 0)
+    }
+
+    @Test func newRepoListMerging() {
+        #expect(Engine.mergeNewRepos(existing: ["a/x"], found: ["a/y", "A/X"], replace: false) == ["a/x", "a/y"])
+        #expect(Engine.mergeNewRepos(existing: ["a/x"], found: ["a/y"], replace: true) == ["a/y"])
     }
 }
 
@@ -98,17 +56,22 @@ private final class GitSandbox {
     deinit { try? FileManager.default.removeItem(at: root) }
 
     var scan: URL { root.appending(path: "code") }
+    /// Clones outside the scan folder, for `repos`.
+    var elsewhere: URL { root.appending(path: "elsewhere") }
     var nas: URL { root.appending(path: "nas/github-backups") }
     var work: URL { root.appending(path: "work") }
 
+    func mirror(_ path: String) -> URL { nas.appending(path: "mirrors/\(path)") }
+
     @discardableResult
-    func makeRepo(_ path: String, remote: String?, commits: Int = 1) throws -> URL {
-        let dir = scan.appending(path: path)
+    func makeRepo(_ path: String, remote: String?, commits: Int = 1, in base: URL? = nil) throws -> URL {
+        let dir = (base ?? scan).appending(path: path)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try git.run(["init", "--quiet", "-b", "main"], in: dir)
         try git.run(["config", "user.email", "test@example.com"], in: dir)
         try git.run(["config", "user.name", "Test"], in: dir)
         try git.run(["config", "commit.gpgsign", "false"], in: dir)
+        try git.run(["config", "tag.gpgsign", "false"], in: dir)
         if let remote { try git.run(["remote", "add", "origin", remote], in: dir) }
         try commit(dir, count: commits)
         return dir
@@ -122,10 +85,22 @@ private final class GitSandbox {
         }
     }
 
-    func config(remoteOnly: [String] = [], exclude: [String] = [], newRepos: GitHubConfig.NewRepos = .include) -> GitHubConfig {
-        GitHubConfig(every: Interval(seconds: 86400), around: nil, staleAfter: Interval(seconds: 172800), dest: "github-backups",
-                     scan: [scan], newRepos: newRepos, exclude: exclude, remoteOnly: remoteOnly,
-                     groups: ["acme": "acme", "*": "other"], keep: .standard, gc: false, line: 1)
+    func sha(_ ref: String, in dir: URL) throws -> String {
+        try git.run(["rev-parse", ref], in: dir).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func refs(_ prefix: String, in dir: URL) throws -> [String] {
+        try git.run(["for-each-ref", "--format=%(refname)", prefix], in: dir).split(separator: "\n").map(String.init)
+    }
+
+    func config(remoteOnly: [String] = [], exclude: [String] = [], newRepos: GitHubConfig.NewRepos = .include,
+                repos: [URL] = [], onRemoteDelete: GitHubConfig.OnRemoteDelete = .keep) -> GitHubConfig {
+        var c = GitHubConfig(every: Interval(seconds: 86400), around: nil, staleAfter: Interval(seconds: 172800), dest: "github-backups",
+                             scan: [scan], newRepos: newRepos, exclude: exclude, remoteOnly: remoteOnly,
+                             groups: ["acme": "acme", "*": "other"], gc: false, line: 1)
+        c.repos = repos
+        c.onRemoteDelete = onRemoteDelete
+        return c
     }
 
     func backup(_ config: GitHubConfig, store: Store) -> GitHubBackup {
@@ -144,15 +119,22 @@ private final class GitSandbox {
         try s.makeRepo("misc/notgithub", remote: "git@gitlab.com:x/y.git")
         try s.makeRepo("misc/noremote", remote: nil)
         try s.makeRepo("misc/tool", remote: "https://github.com/someone/tool.git")
+        let thesis = try s.makeRepo("thesis", remote: nil, in: s.elsewhere)
+        let listed = try s.makeRepo("site", remote: "git@github.com:me/site.git", in: s.elsewhere)
 
         let found = RepoDiscovery.findRepos(in: [s.scan])
         #expect(found.count == 4)
         #expect(!found.contains { $0.path().contains("vendor") })
         #expect(RepoDiscovery.githubRemote(of: outer)?.owner == "acme")
 
-        let (targets, excluded) = RepoDiscovery.targets(config: s.config(remoteOnly: ["acme/archive"], exclude: ["someone/*"]))
-        #expect(targets.map(\.fullName) == ["acme/app", "acme/archive"])
-        #expect(targets[1].source == .remoteOnly)
+        let config = s.config(remoteOnly: ["acme/archive"], exclude: ["someone/*"],
+                              repos: [thesis, listed, outer, s.elsewhere.appending(path: "missing")])
+        let (targets, excluded) = RepoDiscovery.targets(config: config)
+        #expect(targets.map(\.fullName) == ["acme/app", "thesis", "me/site", "acme/archive"])
+        #expect(targets[0].isListed)
+        #expect(!targets[1].hasGitHubRemote && targets[1].isListed && targets[1].remoteURL.isEmpty)
+        #expect(targets[2].hasGitHubRemote && targets[2].isListed)
+        #expect(targets[3].source == .remoteOnly && !targets[3].isListed)
         #expect(excluded.map(\.fullName) == ["someone/tool"])
     }
 
@@ -160,26 +142,29 @@ private final class GitSandbox {
         let s = try GitSandbox()
         let repo = try s.makeRepo("acme/app", remote: "git@github.com:acme/app.git", commits: 2)
         let store = try Store(directory: s.root.appending(path: "state"))
-        let day1 = day(2026, 4, 1)
 
-        let first = s.backup(s.config(), store: store).run(trigger: "manual", now: day1)
+        let first = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 1))
         #expect(first.record.outcome == .success)
         #expect(first.repos.first?.action == .backedUp)
         #expect(first.repos.first?.reason.hasPrefix("new repo") == true)
         // Not pushed anywhere, so all commits count as unpushed.
         #expect(first.repos.first?.reason.contains("2 commits not pushed") == true)
 
-        let archive = s.nas.appending(path: "bundles/acme/app/260401-acme-app.bundle.xz")
-        #expect(FileManager.default.fileExists(atPath: archive.path(percentEncoded: false)))
+        let mirror = s.mirror("acme/app.git")
+        #expect(FileManager.default.fileExists(atPath: mirror.appending(path: "HEAD").path(percentEncoded: false)))
         let reports = try FileManager.default.contentsOfDirectory(atPath: s.nas.appending(path: "reports").path(percentEncoded: false))
         #expect(reports.count == 1)
 
-        // The archive restores to a repo with the same history.
-        let restored = s.root.appending(path: "restored.bundle")
-        try XZ.decompress(archive, to: restored)
+        // The mirror on the NAS clones to a repo with the same history.
         let clone = s.root.appending(path: "clone")
-        try s.git.run(["clone", "--quiet", restored.path(percentEncoded: false), clone.path(percentEncoded: false)])
-        #expect(try s.git.run(["rev-parse", "HEAD"], in: clone) == s.git.run(["rev-parse", "HEAD"], in: repo))
+        try s.git.run(["clone", "--quiet", mirror.path(percentEncoded: false), clone.path(percentEncoded: false)])
+        #expect(try s.sha("HEAD", in: clone) == s.sha("HEAD", in: repo))
+
+        let record1 = try #require(store.repo("acme/app"))
+        #expect(record1.mirrorPath == "acme/app.git")
+        #expect((record1.sizeOnNAS ?? 0) > 0)
+        #expect(record1.mirrorUpdated != nil)
+        #expect(record1.hasGitHubRemote)
 
         let second = s.backup(s.config(), store: store).run(trigger: "scheduled", now: day(2026, 4, 2))
         #expect(second.repos.first?.action == .unchanged)
@@ -190,11 +175,8 @@ private final class GitSandbox {
         let reason = try #require(third.repos.first?.reason)
         #expect(reason.contains("3 new commits on main"))
         #expect(reason.contains("new branch feature/x"))
-
-        let record = try #require(store.repo("acme/app"))
-        #expect(record.archiveCount == 2)
-        #expect(record.newestArchiveName == "260403-acme-app.bundle.xz")
-        #expect(record.status == .ok)
+        #expect(try s.sha("refs/heads/feature/x", in: mirror) == s.sha("HEAD", in: repo))
+        #expect(store.repo("acme/app")?.status == .ok)
     }
 
     @Test func dryRunWritesNothing() throws {
@@ -204,27 +186,111 @@ private final class GitSandbox {
         let result = s.backup(s.config(), store: store).run(trigger: "manual", dryRun: true)
         #expect(result.repos.first?.action == .wouldBackUp)
         #expect(result.record.summary == "1 would be backed up")
-        #expect(!FileManager.default.fileExists(atPath: s.nas.appending(path: "bundles").path(percentEncoded: false)))
+        #expect(!FileManager.default.fileExists(atPath: s.nas.appending(path: "mirrors").path(percentEncoded: false)))
         #expect(store.repos().isEmpty)
     }
 
-    @Test func prunesOldArchivesAndFlagsMissingRepos() throws {
+    @Test func keepsDeletedBranchesAndForcePushedCommits() throws {
+        let s = try GitSandbox()
+        let repo = try s.makeRepo("acme/app", remote: "git@github.com:acme/app.git", commits: 2)
+        try s.git.run(["checkout", "--quiet", "-b", "feature"], in: repo)
+        try s.commit(repo)
+        try s.git.run(["checkout", "--quiet", "main"], in: repo)
+        try s.git.run(["tag", "v1"], in: repo)
+        let feature = try s.sha("refs/heads/feature", in: repo)
+        let oldMain = try s.sha("refs/heads/main", in: repo)
+        let store = try Store(directory: s.root.appending(path: "state"))
+        _ = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 1))
+
+        // Delete the branch and the tag, and rewrite main.
+        try s.git.run(["branch", "-D", "feature"], in: repo)
+        try s.git.run(["tag", "-d", "v1"], in: repo)
+        try s.git.run(["reset", "--quiet", "--hard", "HEAD~1"], in: repo)
+        try s.commit(repo)
+        let result = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 2))
+        let r = try #require(result.repos.first)
+        #expect(r.action == .backedUp)
+        #expect(Set(r.keptRefs) == ["refs/deleted/2026-04-02/heads/feature", "refs/deleted/2026-04-02/tags/v1",
+                                    "refs/deleted/2026-04-02/heads/main"])
+        #expect(result.record.counts.keptRefs == 3)
+        #expect(result.record.summary.contains("3 deleted refs kept"))
+
+        let mirror = s.mirror("acme/app.git")
+        #expect(try s.refs("refs/heads", in: mirror) == ["refs/heads/main"])
+        #expect(try s.refs("refs/tags", in: mirror).isEmpty)
+        #expect(try s.sha("refs/deleted/2026-04-02/heads/feature", in: mirror) == feature)
+        #expect(try s.sha("refs/deleted/2026-04-02/heads/main", in: mirror) == oldMain)
+        #expect(try s.sha("refs/heads/main", in: mirror) == s.sha("HEAD", in: repo))
+        #expect(store.repo("acme/app")?.deletedRefsKept.count == 3)
+
+        // A lost cache on this Mac is filled from the NAS first, so the kept refs survive.
+        try FileManager.default.removeItem(at: s.work)
+        try s.commit(repo)
+        _ = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 3))
+        #expect(try s.sha("refs/deleted/2026-04-02/heads/feature", in: mirror) == feature)
+        #expect(try s.sha("refs/heads/main", in: mirror) == s.sha("HEAD", in: repo))
+    }
+
+    @Test func pruneRemovesDeletedBranches() throws {
         let s = try GitSandbox()
         let repo = try s.makeRepo("acme/app", remote: "git@github.com:acme/app.git")
+        try s.git.run(["branch", "feature"], in: repo)
         let store = try Store(directory: s.root.appending(path: "state"))
-        let folder = s.nas.appending(path: "bundles/acme/app")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        for d in [day(2026, 3, 30), day(2026, 3, 31), day(2026, 4, 1), day(2025, 1, 1)] {
-            try Data("x".utf8).write(to: folder.appending(path: ArchiveNaming.name(owner: "acme", repo: "app", date: d)))
-        }
-        let result = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 2))
-        #expect(result.repos.first?.pruned == ["250101-acme-app.bundle.xz"])
-        #expect(store.repo("acme/app")?.archiveCount == 4)
+        let config = s.config(onRemoteDelete: .prune)
+        _ = s.backup(config, store: store).run(trigger: "manual", now: day(2026, 4, 1))
+        let mirror = s.mirror("acme/app.git")
+        #expect(try s.refs("refs/heads", in: mirror) == ["refs/heads/feature", "refs/heads/main"])
 
-        try FileManager.default.removeItem(at: repo)
-        _ = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 3))
-        #expect(store.repo("acme/app")?.status == .missingLocally)
-        #expect(store.repo("acme/app")?.archiveCount == 4)
+        try s.git.run(["branch", "-D", "feature"], in: repo)
+        let result = s.backup(config, store: store).run(trigger: "manual", now: day(2026, 4, 2))
+        #expect(result.repos.first?.prunedRefs == ["refs/heads/feature"])
+        #expect(result.record.counts.pruned == 1)
+        #expect(try s.refs("refs/heads", in: mirror) == ["refs/heads/main"])
+        #expect(try s.refs("refs/deleted", in: mirror).isEmpty)
+    }
+
+    @Test func reposWithoutGitHubRemoteGoToLocalGroup() throws {
+        let s = try GitSandbox()
+        try s.makeRepo("acme/app", remote: "git@github.com:acme/app.git")
+        let store = try Store(directory: s.root.appending(path: "state"))
+        _ = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 1))
+
+        // Listed in repos after the first run: counts as decided even with prompt.
+        let thesis = try s.makeRepo("thesis", remote: nil, commits: 2, in: s.elsewhere)
+        let result = s.backup(s.config(newRepos: .prompt, repos: [thesis]), store: store).run(trigger: "manual", now: day(2026, 4, 2))
+        #expect(result.repos.first { $0.fullName == "thesis" }?.action == .backedUp)
+        #expect(result.newRepos.isEmpty)
+        let mirror = s.mirror("local/thesis.git")
+        #expect(try s.sha("refs/heads/main", in: mirror) == s.sha("HEAD", in: thesis))
+        let record = try #require(store.repo("thesis"))
+        #expect(!record.hasGitHubRemote)
+        #expect(record.unpushedCommits == nil)
+        #expect(record.mirrorPath == "local/thesis.git")
+    }
+
+    @Test func promptHoldsNewReposUntilIncluded() throws {
+        let s = try GitSandbox()
+        try s.makeRepo("acme/app", remote: "git@github.com:acme/app.git")
+        let store = try Store(directory: s.root.appending(path: "state"))
+        let first = s.backup(s.config(newRepos: .prompt), store: store).run(trigger: "manual", now: day(2026, 4, 1))
+        #expect(first.newRepos.isEmpty)
+        #expect(first.repos.first?.action == .backedUp)
+
+        try s.makeRepo("acme/new", remote: "git@github.com:acme/new.git")
+        let held = s.backup(s.config(newRepos: .prompt), store: store).run(trigger: "manual", now: day(2026, 4, 2))
+        #expect(held.newRepos == ["acme/new"])
+        let r = try #require(held.repos.first { $0.fullName == "acme/new" })
+        #expect(r.action == .skipped)
+        #expect(r.reason.contains("waiting for you to decide"))
+        #expect(store.repo("acme/new") == nil)
+        #expect(!FileManager.default.fileExists(atPath: s.mirror("acme/new.git").path(percentEncoded: false)))
+
+        // What Engine.includeNewRepos saves.
+        try store.saveRepo(RepoRecord(fullName: "acme/new", source: .localClone, localPath: nil, firstSeen: day(2026, 4, 2)))
+        let included = s.backup(s.config(newRepos: .prompt), store: store).run(trigger: "manual", now: day(2026, 4, 3))
+        #expect(included.newRepos.isEmpty)
+        #expect(included.repos.first { $0.fullName == "acme/new" }?.action == .backedUp)
+        #expect(FileManager.default.fileExists(atPath: s.mirror("acme/new.git/HEAD").path(percentEncoded: false)))
     }
 
     @Test func newReposAreReportedAfterFirstRun() throws {
@@ -240,7 +306,28 @@ private final class GitSandbox {
         #expect(ignored.repos.first { $0.fullName == "acme/new" }?.action == .skipped)
     }
 
-    @Test func mirrorsRemoteOnlyRepos() throws {
+    @Test func flagsMissingReposAndKeepsTheirMirror() throws {
+        let s = try GitSandbox()
+        let repo = try s.makeRepo("acme/app", remote: "git@github.com:acme/app.git")
+        let store = try Store(directory: s.root.appending(path: "state"))
+        _ = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 1))
+        try FileManager.default.removeItem(at: repo)
+        _ = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 2))
+        #expect(store.repo("acme/app")?.status == .missingLocally)
+        #expect(FileManager.default.fileExists(atPath: s.mirror("acme/app.git/HEAD").path(percentEncoded: false)))
+    }
+
+    @Test func sameNameInOneGroupGetsItsOwnMirror() throws {
+        let s = try GitSandbox()
+        try s.makeRepo("x/app", remote: "git@github.com:someone/app.git")
+        try s.makeRepo("y/app", remote: "git@github.com:other/app.git")
+        let store = try Store(directory: s.root.appending(path: "state"))
+        _ = s.backup(s.config(), store: store).run(trigger: "manual", now: day(2026, 4, 1))
+        #expect(store.repo("someone/app")?.mirrorPath == "other/app.git")
+        #expect(store.repo("other/app")?.mirrorPath == "other/other-app.git")
+    }
+
+    @Test func mirrorsFromAnyGitURL() throws {
         let s = try GitSandbox()
         let upstream = try s.makeRepo("upstream", remote: nil, commits: 2)
         try s.git.run(["tag", "v1"], in: upstream)
@@ -250,10 +337,13 @@ private final class GitSandbox {
         let remote = try b.remoteRefs(url, isCancelled: { false })
         #expect(Set(remote.keys) == ["refs/heads/main", "refs/tags/v1"])
 
-        let mirror = s.work.appending(path: "mirrors/x/upstream.git")
-        try b.updateMirror(mirror, url: url, isCancelled: { false })
+        let mirror = s.work.appending(path: "nas-mirrors/x/upstream.git")
+        try b.prepareMirror(mirror, nasPath: "github-backups/mirrors/x/upstream.git", onNAS: false, previous: nil, isCancelled: { false })
+        let update = try b.updateMirror(mirror, from: url, sourceRefs: remote, now: day(2026, 4, 1), isCancelled: { false })
+        #expect(update == GitHubBackup.MirrorUpdate())
         #expect(try b.localRefs(mirror) == remote)
         #expect(GitHubBackup.fingerprint(try b.localRefs(mirror)) == GitHubBackup.fingerprint(remote))
+        try b.verifyMirror(mirror, isCancelled: { false })
     }
 
     @Test func xzRoundTrip() throws {

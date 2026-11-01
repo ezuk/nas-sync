@@ -4,6 +4,7 @@ import SyncCore
 struct PopoverView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @State private var skipError: String?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
@@ -79,17 +80,14 @@ struct PopoverView: View {
         .padding(EdgeInsets(top: 16, leading: 16, bottom: 14, trailing: 16))
     }
 
-    private static let steps = ["checking", "fetching", "bundling", "verifying", "compressing", "copying", "pruning"]
-    private static let stepNames = ["check", "fetch", "bundle", "verify", "xz", "copy", "prune"]
+    private static let steps = GitHubBackup.Step.allCases.map(\.rawValue)
+    private static let stepNames = ["check", "fetch", "verify", "copy"]
 
     private func stepLabel(_ step: String?) -> String {
         switch step {
-        case "fetching": "fetching from GitHub"
-        case "bundling": "bundling"
-        case "verifying": "verifying the bundle"
-        case "compressing": "compressing"
+        case "fetching": "updating the mirror"
+        case "verifying": "verifying the mirror"
         case "copying": "copying to the NAS"
-        case "pruning": "removing old archives"
         default: "checking for changes"
         }
     }
@@ -193,19 +191,52 @@ struct PopoverView: View {
         .padding(.bottom, 14)
     }
 
+    private var promptsForNewRepos: Bool { model.engine.config?.github?.newRepos == .prompt }
+
+    @ViewBuilder
     private func newReposNote(_ repos: [String]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            (Text("\(Format.count(repos.count, "new repo")) found").bold()
-                + Text(" in your scan folders and added to the backup: ")
-                + Text(repos.prefix(4).joined(separator: ", ")).font(.system(size: 11, design: .monospaced))
-                + Text(repos.count > 4 ? " and \(repos.count - 4) more." : "."))
+            if promptsForNewRepos {
+                (Text("\(Format.count(repos.count, "new repo")) found").bold()
+                    + Text(" in your scan folders. Back \(repos.count == 1 ? "it" : "them") up to the NAS?"))
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(repos.prefix(5), id: \.self) { repo in
+                    HStack(spacing: 8) {
+                        Text(repo).font(.system(size: 11, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        Button("Back Up") { model.engine.includeNewRepos([repo]) }.buttonStyle(.link)
+                        Button("Skip") { skip([repo]) }.buttonStyle(.link)
+                    }
+                    .font(.system(size: 12))
+                }
+                if repos.count > 5 {
+                    Text("and \(repos.count - 5) more").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 12) {
+                    if repos.count > 1 {
+                        Button("Back Up All") { model.engine.includeNewRepos(repos) }.buttonStyle(.link)
+                        Button("Skip All") { skip(repos) }.buttonStyle(.link)
+                    }
+                    Button("Later") { model.engine.dismissNewRepos() }.buttonStyle(.link)
+                }
                 .font(.system(size: 12))
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 12) {
-                Button("Exclude one…") { model.openConfigInEditor() }.buttonStyle(.link)
-                Button("Dismiss") { model.engine.dismissNewRepos() }.buttonStyle(.link)
+                if let skipError {
+                    Text(skipError).font(.system(size: 11.5)).foregroundStyle(Palette.red).fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                (Text("\(Format.count(repos.count, "new repo")) found").bold()
+                    + Text(model.engine.config?.github?.newRepos == .ignore ? " in your scan folders, not backed up (new_repos = \"ignore\"): " : " in your scan folders and added to the backup: ")
+                    + Text(repos.prefix(4).joined(separator: ", ")).font(.system(size: 11, design: .monospaced))
+                    + Text(repos.count > 4 ? " and \(repos.count - 4) more." : "."))
+                    .font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 12) {
+                    Button("Exclude one…") { model.openConfigInEditor() }.buttonStyle(.link)
+                    Button("Dismiss") { model.engine.dismissNewRepos() }.buttonStyle(.link)
+                }
+                .font(.system(size: 12))
             }
-            .font(.system(size: 12))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -213,6 +244,16 @@ struct PopoverView: View {
         .background(Palette.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 16)
         .padding(.bottom, 14)
+    }
+
+    /// Adds the repos to github.exclude in the config file, keeping its comments.
+    private func skip(_ repos: [String]) {
+        do {
+            try model.engine.skipNewRepos(repos)
+            skipError = nil
+        } catch {
+            skipError = error.localizedDescription
+        }
     }
 
     // MARK: Job sections

@@ -2,133 +2,329 @@ import AppKit
 import SwiftUI
 import SyncCore
 
+/// Every setting NAS Sync has, as a native form over the config file.
+///
+/// The sidebar follows three questions: where backups go (NAS), when they run (When to Sync), and what gets
+/// backed up (All Folders, each folder, Git Repos). App settings that aren't in the file come last.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @State private var pane: Pane = .config
-
-    enum Pane: String, CaseIterable, Identifiable {
-        case config = "Config", general = "General", permissions = "Permissions"
-        var id: String { rawValue }
-        var symbol: String {
-            switch self {
-            case .config: "doc.text"
-            case .general: "gearshape"
-            case .permissions: "lock.shield"
-            }
-        }
-    }
+    @State private var settings = SettingsModel()
+    /// Opens on this page instead of the usual one (used to render screenshots).
+    var initialPane: SettingsPane? = nil
 
     var body: some View {
         NavigationSplitView {
-            List(Pane.allCases, selection: $pane) { p in
-                Label(p.rawValue, systemImage: p.symbol).tag(p)
-            }
-            .navigationSplitViewColumnWidth(180)
+            SettingsSidebar()
+                .navigationSplitViewColumnWidth(190)
         } detail: {
             ScrollView {
-                Group {
-                    switch pane {
-                    case .config: ConfigPane()
-                    case .general: GeneralPane()
-                    case .permissions: PermissionsPane()
+                VStack(alignment: .leading, spacing: 18) {
+                    banners
+                    Group {
+                        switch settings.pane {
+                        case .nas: NASPane()
+                        case .when: WhenPane()
+                        case .allFolders: AllFoldersPane()
+                        case .folder(let i): FolderPane(index: i).id(i)
+                        case .git: GitPane()
+                        case .gitConfig: GitConfigPane()
+                        case .gitRepos: GitReposPane()
+                        case .gitNAS: GitNASPane()
+                        case .general: GeneralPane()
+                        case .permissions: PermissionsPane()
+                        case .file: ConfigFilePane()
+                        }
                     }
+                    .disabled(settings.isLocked && settings.pane.isInFile)
+                    .opacity(settings.isLocked && settings.pane.isInFile ? 0.5 : 1)
                 }
-                .padding(EdgeInsets(top: 20, leading: 24, bottom: 20, trailing: 24))
+                .padding(EdgeInsets(top: 20, leading: 24, bottom: 22, trailing: 24))
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) { SettingsFooter() }
         }
         .navigationTitle("Settings")
-        .frame(minWidth: 760, minHeight: 520)
+        .frame(minWidth: 820, minHeight: 560)
+        .environment(settings)
         .onAppear {
-            if !model.location.isAllowed { pane = .permissions }
-            if !FileManager.default.fileExists(atPath: model.engine.configURL.path(percentEncoded: false)) { pane = .config }
+            settings.attach(model.engine)
+            if let initialPane {
+                settings.pane = initialPane
+            } else if !model.location.isAllowed, !settings.isSetup {
+                settings.pane = .permissions
+            }
+        }
+        .onChange(of: model.engine.configURL) { settings.attach(model.engine) }
+        .onChange(of: model.engine.config) { settings.reload() }
+        .onChange(of: model.engine.status.configIssues) { settings.reload() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in settings.reload() }
+        .sheet(isPresented: Binding(get: { settings.removingFolder != nil }, set: { if !$0 { settings.removingFolder = nil } })) {
+            RemoveFolderSheet().environment(settings)
+        }
+    }
+
+    @ViewBuilder
+    private var banners: some View {
+        if settings.isLocked, settings.pane.isInFile, let e = settings.firstError {
+            let name = model.engine.configURL.lastPathComponent
+            let at = e.line.map { " on line \($0)" } ?? ""
+            let after = model.engine.status.usingLastGoodConfig
+                ? "Still running the last valid version of this file until it's fixed."
+                : "Nothing syncs until it's fixed."
+            SettingsBanner(kind: .error, title: "\(name) has a mistake\(at), so these settings are locked.",
+                           detail: "\(e.description.prefix(1).uppercased() + e.description.dropFirst()). \(after)") {
+                Button("Open in Editor") { model.openConfigInEditor() }.buttonStyle(.borderedProminent)
+            }
+        } else if settings.isSetup, settings.pane.isInFile {
+            SetupBanner()
         }
     }
 }
 
-// MARK: Config
+extension SettingsPane {
+    /// Pages whose settings are stored in the config file.
+    var isInFile: Bool {
+        switch self {
+        case .general, .permissions, .file: false
+        default: true
+        }
+    }
+}
 
-struct ConfigPane: View {
-    @Environment(AppModel.self) private var model
-    @State private var text = ""
-    @State private var hasRsync = true
+// MARK: Sidebar
 
-    private var exists: Bool { FileManager.default.fileExists(atPath: model.engine.configURL.path(percentEncoded: false)) }
+struct SettingsSidebar: View {
+    @Environment(SettingsModel.self) private var settings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.engine.configURL.lastPathComponent).font(.system(size: 15, weight: .semibold))
-                    Text("\(abbreviated(model.engine.configURL)) · reloaded automatically when saved")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+        List(selection: Binding(get: { settings.pane }, set: { if let p = $0 { settings.pane = p } })) {
+            Section("Backups") {
+                item("NAS", .nas)
+                item("When to Sync", .when)
+                item("All Folders", .allFolders)
+                ForEach(Array(settings.config.allFolders.enumerated()), id: \.offset) { i, f in
+                    item(f.name.isEmpty ? "Untitled folder" : f.name, .folder(i), sub: true, paused: !f.enabled)
                 }
+                Button { chooseFolder() } label: {
+                    Text("+ Add Folder").font(.system(size: 12.5)).foregroundStyle(Palette.blue).padding(.leading, 14)
+                }
+                .buttonStyle(.plain)
+                .disabled(settings.isLocked)
+                item("Git Repos", .git)
+                item("Config", .gitConfig, sub: true)
+                item("Repos", .gitRepos, sub: true)
+                item("On the NAS", .gitNAS, sub: true)
+            }
+            Section("App") {
+                item("General", .general)
+                item("Permissions", .permissions)
+                item("Config File", .file)
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private func item(_ title: String, _ pane: SettingsPane, sub: Bool = false, paused: Bool = false) -> some View {
+        HStack(spacing: 7) {
+            Text(title)
+                .font(.system(size: sub ? 12.5 : 13))
+                .foregroundStyle(paused ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 4)
+            if settings.paneHasError(pane) {
+                Circle().fill(Palette.red).frame(width: 7, height: 7).accessibilityLabel("Has a problem")
+            }
+        }
+        .padding(.leading, sub ? 14 : 0)
+        .tag(pane)
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Back Up This Folder"
+        panel.message = "Choose a folder to back up to the NAS."
+        if panel.runModal() == .OK, let url = panel.url { settings.addFolder(source: url) }
+    }
+}
+
+// MARK: Banners and footer
+
+struct SetupBanner: View {
+    @Environment(SettingsModel.self) private var settings
+
+    var body: some View {
+        let c = settings.config
+        let wifi = !c.home.wifi.isEmpty
+        let nas = !c.nas.path.isEmpty && settings.error(.named("nas", "path")) == nil && settings.error(.named("nas", "ssh")) == nil
+        let folder = !c.allFolders.isEmpty
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Three things to fill in and NAS Sync can start.").font(.system(size: 12.5, weight: .semibold))
+            VStack(alignment: .leading, spacing: 3) {
+                check(wifi, wifi ? "Home Wi-Fi: filled in from the network you're on now" : "Your home Wi-Fi, under When to Sync")
+                check(nas, "Your NAS login and base folder, on the NAS page")
+                check(folder, "A first folder to back up: + Add Folder in the sidebar")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 11)
+        .background(Palette.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.primary.opacity(0.09)))
+    }
+
+    private func check(_ done: Bool, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Text(done ? "✓" : "○").fontWeight(done ? .bold : .regular).foregroundStyle(done ? Palette.green : .secondary)
+            Text(text)
+        }
+        .font(.system(size: 12))
+    }
+}
+
+struct SettingsFooter: View {
+    @Environment(SettingsModel.self) private var settings
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let (mark, color, text) = status
+        HStack(spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(mark).fontWeight(.bold).foregroundStyle(color)
+                Text(text)
+            }
+            Spacer()
+            if settings.pane != .file {
+                Button("View \(model.engine.configURL.lastPathComponent)") { settings.pane = .file }
+                    .buttonStyle(.link)
+            }
+        }
+        .font(.system(size: 11.5))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 16)
+        .frame(height: 34)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var status: (String, Color, String) {
+        if settings.isLocked { return ("✕", Palette.red, "Read-only until the file is fixed") }
+        if settings.isSetup { return ("○", .secondary, "Saved as soon as you fill this in") }
+        if !settings.fieldErrors.isEmpty { return ("✕", Palette.red, "Not saved. Everything else keeps running on the last good settings.") }
+        if settings.savedOnce { return ("✓", Palette.green, "Saved. NAS Sync is using this now.") }
+        return ("✓", Palette.green, "All changes are saved automatically")
+    }
+}
+
+struct RemoveFolderSheet: View {
+    @Environment(SettingsModel.self) private var settings
+
+    var body: some View {
+        let index = settings.removingFolder ?? 0
+        let name = settings.config.allFolders.indices.contains(index) ? settings.config.allFolders[index].name : "this folder"
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Stop backing up “\(name)”?").font(.system(size: 13.5, weight: .semibold))
+            Text("Nothing is deleted. The copy and its old versions stay on the NAS, and your folder on this Mac isn't touched.")
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 8)
+            HStack {
                 Spacer()
-                if exists {
-                    Button("Reveal in Finder") { model.revealConfig() }
+                Button("Cancel", role: .cancel) { settings.removingFolder = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("Remove Folder") {
+                    settings.removingFolder = nil
+                    settings.removeFolder(index)
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 360)
+    }
+}
+
+// MARK: Config File
+
+struct ConfigFilePane: View {
+    @Environment(AppModel.self) private var model
+    @Environment(SettingsModel.self) private var settings
+
+    private static let editors: [(String, String)] = [
+        ("com.microsoft.VSCode", "Visual Studio Code"), ("dev.zed.Zed", "Zed"), ("com.todesktop.230313mzl4w4u92", "Cursor"),
+        ("com.sublimetext.4", "Sublime Text"), ("com.panic.Nova", "Nova"), ("com.barebones.bbedit", "BBEdit"),
+        ("com.apple.dt.Xcode", "Xcode"), ("com.apple.TextEdit", "TextEdit"),
+    ]
+
+    var body: some View {
+        @Bindable var model = model
+        SettingsPage(title: "Config File", subtitle: "Everything under Backups is stored in this one text file.") {
+            SettingsGroup {
+                SettingsRow(label: "Location", help: "Point several Macs at the same file to share one setup.") {
+                    Text(SettingsModel.abbreviate(model.engine.configURL)).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
+                    Button("Change…", action: chooseConfig)
+                    if settings.fileExists { Button("Reveal in Finder") { model.revealConfig() } }
+                }
+                SettingsRow(label: "Open with") {
+                    Picker("", selection: $model.editorBundleID) {
+                        Text("Default app").tag(String?.none)
+                        ForEach(Self.editors.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.0) != nil }, id: \.0) { id, name in
+                            Text(name).tag(String?.some(id))
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                     Button("Open in Editor") { model.openConfigInEditor() }.buttonStyle(.borderedProminent)
                 }
             }
-            if exists {
-                ConfigCodeView(text: text, issueLines: Set(model.engine.configIssues.compactMap(\.line)))
-                validation
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("There's no config file yet.").font(.system(size: 13, weight: .medium))
-                    Text("NAS Sync is set up with a text file, so you (or an LLM) can edit it directly. Create a starter file with comments explaining each setting, then fill in your NAS address and folders.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Button("Create Starter Config") {
-                        model.createStarterConfig()
-                        model.openConfigInEditor()
-                        reload()
-                    }
-                    .buttonStyle(.borderedProminent)
+            if settings.fileExists {
+                VStack(alignment: .leading, spacing: 6) {
+                    ConfigCodeView(text: settings.doc.text,
+                                   issueLines: Set(settings.result.issues.compactMap(\.line)),
+                                   changed: settings.baselineLines)
+                    validation
+                    SettingsNote(text: "The form and this file are the same settings. Edit the file by hand and the form updates. Change the form and only the affected lines change: comments and order stay as you left them.")
                 }
-                .padding(16)
-                .background(.background, in: RoundedRectangle(cornerRadius: 9))
+            } else {
+                SettingsNote(text: "There's no config file yet. Fill in the NAS page and it's created, with comments explaining each setting.")
             }
         }
-        .onAppear(perform: reload)
-        .onChange(of: model.engine.status.configIssues) { reload() }
-        .onChange(of: model.engine.config) { reload() }
-    }
-
-    private func reload() {
-        text = (try? String(contentsOf: model.engine.configURL, encoding: .utf8)) ?? ""
-        hasRsync = Rsync.find(override: model.engine.config?.nas.rsync) != nil
     }
 
     @ViewBuilder
     private var validation: some View {
         let s = model.engine.status
         VStack(alignment: .leading, spacing: 6) {
-            if let c = model.engine.config, s.configValid {
-                var parts = [Format.count(c.folders.count, "folder"), "1 NAS", "home network “\(c.home.wifi)”"]
-                let _ = c.github.map { parts.append("GitHub backups every \(StatusText.every($0.every.seconds))") }
-                ValidationRow(kind: .ok, text: "Valid. " + parts.joined(separator: ", ") + ".")
+            if !settings.fieldErrors.isEmpty {
+                let n = settings.fieldErrors.count
+                ValidationRow(kind: .error, text: "Not saved yet. Fix the highlighted \(n == 1 ? "setting" : "settings") first.")
+            } else if let c = settings.result.config, settings.result.errors.isEmpty {
+                ValidationRow(kind: .ok, text: "Valid. " + Self.summary(c) + ".")
             }
-            ForEach(model.engine.configIssues, id: \.description) { issue in
+            ForEach(settings.result.issues, id: \.description) { issue in
                 ValidationRow(kind: issue.severity == .error ? .error : .warning, text: issue.description)
             }
             if s.usingLastGoodConfig {
                 ValidationRow(kind: .warning, text: "Still running the last valid version of this file until the errors are fixed.")
             }
-            if !hasRsync {
+            if Rsync.find(override: model.engine.config?.nas.rsync) == nil {
                 ValidationRow(kind: .warning, text: Rsync.missingMessage)
-            }
-            if !model.location.isAllowed {
-                HStack(spacing: 4) {
-                    ValidationRow(kind: .warning, text: "Location access is needed to read the Wi-Fi name.")
-                    Button("Grant…") { model.location.request() }.buttonStyle(.link).font(.system(size: 12))
-                }
             }
         }
     }
 
-    private func abbreviated(_ url: URL) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path(percentEncoded: false)
-        let p = url.path(percentEncoded: false)
-        return p.hasPrefix(home) ? "~/" + p.dropFirst(home.count).drop { $0 == "/" } : p
+    static func summary(_ c: AppConfig) -> String {
+        var parts = [Format.count(c.folders.count, "folder"), "1 NAS", "home network “\(c.home.wifi)”"]
+        if let gh = c.github { parts.append("GitHub backups every \(StatusText.every(gh.every.seconds))") }
+        return parts.joined(separator: ", ")
+    }
+
+    private func chooseConfig() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "toml") ?? .plainText]
+        panel.directoryURL = model.engine.configURL.deletingLastPathComponent()
+        if panel.runModal() == .OK, let url = panel.url { model.useConfig(at: url) }
     }
 }
 
@@ -148,10 +344,12 @@ struct ValidationRow: View {
     }
 }
 
-/// Read-only TOML with simple highlighting and line numbers.
+/// Read-only TOML with simple highlighting and line numbers. Lines that weren't in the file when the window
+/// opened (`changed` holds the original lines) are tinted, so you can see what the form wrote.
 struct ConfigCodeView: View {
     var text: String
     var issueLines: Set<Int>
+    var changed: Set<String> = []
 
     var body: some View {
         let lines = text.components(separatedBy: "\n")
@@ -163,11 +361,12 @@ struct ConfigCodeView: View {
                         Text(highlight(line)).fixedSize()
                     }
                     .frame(minHeight: 18)
-                    .background(issueLines.contains(i + 1) ? Palette.red.opacity(0.1) : .clear)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(background(line: i + 1, text: line))
                 }
             }
             .font(.system(size: 11.5, design: .monospaced))
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
             .padding(.horizontal, 10)
             .textSelection(.enabled)
         }
@@ -176,12 +375,18 @@ struct ConfigCodeView: View {
         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.primary.opacity(0.09)))
     }
 
+    private func background(line: Int, text: String) -> Color {
+        if issueLines.contains(line) { return Palette.red.opacity(0.1) }
+        if !changed.isEmpty, !changed.contains(text), !text.trimmingCharacters(in: .whitespaces).isEmpty { return Palette.blue.opacity(0.1) }
+        return .clear
+    }
+
     private func highlight(_ line: String) -> AttributedString {
         var out = AttributedString()
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("[") {
             var a = AttributedString(line)
-            a.foregroundColor = Color(red: 0.04, green: 0.31, blue: 0.47)
+            a.foregroundColor = Palette.tomlHeader
             a.font = .system(size: 11.5, weight: .semibold, design: .monospaced)
             return a
         }
@@ -199,7 +404,7 @@ struct ConfigCodeView: View {
         }
         if let eq = code.firstIndex(of: "="), !trimmed.hasPrefix("#") {
             var key = AttributedString(code[..<eq])
-            key.foregroundColor = Color(red: 0.61, green: 0.14, blue: 0.58)
+            key.foregroundColor = Palette.tomlKey
             out += key
             out += AttributedString("=")
             var rest = AttributedString()
@@ -209,7 +414,7 @@ struct ConfigCodeView: View {
                 if c == "\"" {
                     if quoted {
                         var s = AttributedString(buffer + "\"")
-                        s.foregroundColor = Color(red: 0.77, green: 0.10, blue: 0.09)
+                        s.foregroundColor = Palette.tomlString
                         rest += s
                         buffer = ""
                     } else {
@@ -240,83 +445,29 @@ struct ConfigCodeView: View {
 struct GeneralPane: View {
     @Environment(AppModel.self) private var model
 
-    private static let editors: [(String, String)] = [
-        ("com.microsoft.VSCode", "Visual Studio Code"), ("dev.zed.Zed", "Zed"), ("com.todesktop.230313mzl4w4u92", "Cursor"),
-        ("com.sublimetext.4", "Sublime Text"), ("com.panic.Nova", "Nova"), ("com.barebones.bbedit", "BBEdit"),
-        ("com.apple.dt.Xcode", "Xcode"), ("com.apple.TextEdit", "TextEdit"),
-    ]
-
     var body: some View {
-        @Bindable var model = model
-        VStack(alignment: .leading, spacing: 0) {
-            Text("General").font(.system(size: 15, weight: .semibold)).padding(.bottom, 6)
-            PrefRow(label: "Launch at login", help: "Starts in the menu bar. Nothing syncs until the app is running.") {
-                Toggle("", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) })).toggleStyle(.switch).labelsHidden()
-            } value: { Text(model.launchAtLogin ? "On" : "Off") }
-            PrefRow(label: "Notifications", help: "Only when backups break, recover, or go stale.") {
-                HStack {
-                    Button("Send test") { Notifier.post(Notice(id: "test", title: "NAS Sync notifications work", body: "You'll hear from NAS Sync only when something breaks, recovers, or goes stale.")) }
+        SettingsPage(title: "General", subtitle: "Settings for this Mac. They aren't in the config file.") {
+            SettingsGroup {
+                SettingsRow(label: "Launch at login", help: "Starts in the menu bar. Nothing syncs until the app is running.") {
+                    SettingToggle(isOn: model.launchAtLogin) { model.setLaunchAtLogin($0) }
+                }
+                SettingsRow(label: "Notifications", help: "Only when backups break, recover, or go stale.") {
+                    Chip(color: model.notificationsAllowed ? Palette.green : Palette.orange, text: model.notificationsAllowed ? "On" : "Off in System Settings")
                     if !model.notificationsAllowed {
                         Button("Open System Settings") {
                             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
                         }
                     }
-                }
-            } value: { Text(model.notificationsAllowed ? "On" : "Off in System Settings") }
-            PrefRow(label: "Open config with", help: "Used by “Open in Editor”.") {
-                EmptyView()
-            } value: {
-                Picker("", selection: $model.editorBundleID) {
-                    Text("Default app").tag(String?.none)
-                    ForEach(Self.editors.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.0) != nil }, id: \.0) { id, name in
-                        Text(name).tag(String?.some(id))
+                    Button("Send Test") {
+                        Notifier.post(Notice(id: "test", title: "NAS Sync notifications work", body: "You'll hear from NAS Sync only when something breaks, recovers, or goes stale."))
                     }
                 }
-                .labelsHidden()
-                .fixedSize()
-            }
-            PrefRow(label: "Config file", help: "Point several Macs at the same file to share one setup.") {
-                Button("Change…", action: chooseConfig)
-            } value: { Text(model.engine.configURL.path(percentEncoded: false).replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path(percentEncoded: false), with: "~/")).font(.system(size: 11, design: .monospaced)) }
-            PrefRow(label: "NAS login", help: "Uses your SSH key, never a password. Set it up once with ssh-copy-id.") {
-                EmptyView()
-            } value: {
-                Text(model.engine.status.nasLocation ?? "Not set").font(.system(size: 11, design: .monospaced))
-            }
-            PrefRow(label: "Command-line tool", help: "Run nas-sync status, run, check or diagnose from a terminal. Build it with swift build in the repo.") {
-                EmptyView()
-            } value: { Text("nas-sync").font(.system(size: 11, design: .monospaced)) }
-        }
-    }
-
-    private func chooseConfig() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.init(filenameExtension: "toml") ?? .plainText]
-        panel.directoryURL = model.engine.configURL.deletingLastPathComponent()
-        if panel.runModal() == .OK, let url = panel.url { model.useConfig(at: url) }
-    }
-}
-
-struct PrefRow<Control: View, Value: View>: View {
-    var label: String
-    var help: String
-    @ViewBuilder var control: Control
-    @ViewBuilder var value: Value
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 18) {
-                Text(label).font(.system(size: 13, weight: .medium)).frame(width: 170, alignment: .leading)
-                VStack(alignment: .leading, spacing: 3) {
-                    value.font(.system(size: 12.5))
-                    Text(help).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                SettingsRow(label: "Command-line tool", help: "Run nas-sync status, run, check or diagnose from a terminal. Build it with swift build in the repo.") {
+                    Text("nas-sync").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
                 }
-                Spacer(minLength: 12)
-                control
             }
-            .padding(.vertical, 13)
-            Divider()
         }
+        .task { await model.refreshNotificationPermission(request: false) }
     }
 }
 
@@ -326,37 +477,35 @@ struct PermissionsPane: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Permissions").font(.system(size: 15, weight: .semibold))
-            Text("macOS asks for these separately. The app checks them on every sync and warns in the menu bar if one goes missing.")
-                .font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 2).padding(.bottom, 6)
-            let home = model.engine.config?.home.wifi ?? "your home Wi-Fi"
-            permission("Location", ok: model.location.isAllowed,
-                       help: "Needed to read the Wi-Fi name, so the app knows when you are on “\(home)”. Without it, syncing never starts.") {
-                model.location.request()
-            }
-            permission("Full Disk Access", ok: FullDiskAccess.isGranted,
-                       help: "Needed to read protected folders such as ~/Documents or ~/Desktop.") {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
-            }
-            let host = model.engine.config?.nas.host ?? "the NAS"
-            permission("Local Network", ok: model.engine.status.nasConnected || model.engine.status.connectSteps.contains { $0.title.hasPrefix("NAS answers") && $0.state == .ok },
-                       help: "Needed to reach \(host). macOS asks the first time the app connects.", unknownWhenFalse: !model.engine.status.isHome) {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
-            }
-            permission("Notifications", ok: model.notificationsAllowed, help: "Needed to alert you when backups break or recover.") {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
+        let home = model.engine.config?.home.wifi ?? "your home Wi-Fi"
+        let host = model.engine.config?.nas.host ?? "the NAS"
+        SettingsPage(title: "Permissions", subtitle: "macOS asks for these separately. The app checks them on every sync and warns in the menu bar if one goes missing.") {
+            SettingsGroup {
+                permission("Location", ok: model.location.isAllowed,
+                           help: "Needed to read the Wi-Fi name, so the app knows when you are on “\(home)”. Without it, syncing never starts.") {
+                    model.location.request()
+                }
+                permission("Full Disk Access", ok: FullDiskAccess.isGranted,
+                           help: "Needed to read protected folders such as ~/Documents or ~/Desktop.") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+                }
+                permission("Local Network", ok: model.engine.status.nasConnected || model.engine.status.connectSteps.contains { $0.title.hasPrefix("NAS answers") && $0.state == .ok },
+                           help: "Needed to reach \(host). macOS asks the first time the app connects.", unknownWhenFalse: !model.engine.status.isHome) {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")!)
+                }
+                permission("Notifications", ok: model.notificationsAllowed, help: "Needed to alert you when backups break or recover.") {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
+                }
             }
         }
         .task { await model.refreshNotificationPermission(request: false) }
     }
 
     private func permission(_ name: String, ok: Bool, help: String, unknownWhenFalse: Bool = false, grant: @escaping () -> Void) -> some View {
-        PrefRow(label: name, help: help) {
-            if !ok, !unknownWhenFalse { Button("Grant…", action: grant).buttonStyle(.borderedProminent) }
-        } value: {
+        SettingsRow(label: name, help: help) {
             Chip(color: ok ? Palette.green : unknownWhenFalse ? Palette.grey : Palette.orange,
                  text: ok ? "Allowed" : unknownWhenFalse ? "Checked when home" : "Not allowed")
+            if !ok, !unknownWhenFalse { Button("Grant…", action: grant).buttonStyle(.borderedProminent) }
         }
     }
 }

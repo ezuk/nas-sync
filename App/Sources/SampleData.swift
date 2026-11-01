@@ -75,20 +75,19 @@ enum SampleData {
 
     static func ghRun() -> RunRecord {
         var c = RunCounts()
-        c.changed = 5; c.new = 1; c.unchanged = 164; c.failed = 1; c.bytes = 46_000_000; c.total = 171; c.pruned = 2
+        c.changed = 5; c.new = 1; c.unchanged = 164; c.skipped = 1; c.bytes = 4_600_000; c.total = 171; c.keptRefs = 1
         return RunRecord(kind: .github, job: StoreKey.githubJob, trigger: "scheduled (every 24h)", started: Calendar.current.date(bySettingHour: 3, minute: 0, second: 4, of: now)!,
-                         finished: Calendar.current.date(bySettingHour: 3, minute: 14, second: 22, of: now)!, outcome: .warning, counts: c,
-                         summary: "6 backed up, 164 unchanged, 1 failed, 2 old archives pruned",
-                         message: "acme/old-prototype: GitHub says this repo doesn't exist any more. Archives on the NAS are kept.",
+                         finished: Calendar.current.date(bySettingHour: 3, minute: 14, second: 22, of: now)!, outcome: .success, counts: c,
+                         summary: "6 backed up, 164 unchanged, 1 deleted ref kept",
                          items: [
                             RunItem(action: .changed, path: "acme/firmware", size: 38_000_000, detail: "14 new commits on main, new branch fix/usb-wake"),
                             RunItem(action: .new, path: "personal/led-clock", size: 2_100_000, detail: "new repo, first backup"),
                             RunItem(action: .changed, path: "personal/dotfiles", size: 100_000, detail: "1 new commit on main, 2 commits not pushed to GitHub yet"),
-                            RunItem(action: .changed, path: "acme/docs-site", size: 5_800_000, detail: "3 new commits on main, 1 branch deleted"),
-                            RunItem(action: .failed, path: "acme/old-prototype", detail: "GitHub says this repo doesn't exist any more. Archives on the NAS are kept."),
-                            RunItem(action: .unchanged, path: "acme/keymap-tools", detail: "unchanged since 27 Nov 2025"),
+                            RunItem(action: .changed, path: "acme/docs-site", size: 5_800_000, detail: "3 new commits on main, 1 branch deleted, kept the old branch preview as refs/deleted/2026-11-01/heads/preview"),
+                            RunItem(action: .skipped, path: "acme/old-prototype", size: 96_000_000, detail: "GitHub says this repo doesn't exist any more; the mirror on the NAS is kept"),
+                            RunItem(action: .unchanged, path: "acme/keymap-tools", size: 12_000_000, detail: "unchanged since 27 Nov 2025"),
                          ],
-                         stepTimings: ["bundling": 212, "compressing": 401, "copying": 88, "checking": 140, "verifying": 31])
+                         stepTimings: ["fetching": 212, "copying": 88, "checking": 140, "verifying": 31])
     }
 
     static func seedStore(_ store: Store) {
@@ -111,19 +110,22 @@ enum SampleData {
         var fc = RunCounts(); fc.total = 61_131
         _ = try? store.saveRun(RunRecord(kind: .check, job: "Documents", trigger: "full check", started: ago(1500), finished: ago(1497), outcome: .success, counts: fc, summary: "Nothing to copy"))
 
-        func repo(_ name: String, _ source: RepoSource, change: Double, archive: Double, count: Int, size: Int64, status: RepoStatus = .ok, unpushed: Int? = nil) {
-            var r = RepoRecord(fullName: name, source: source, localPath: source == .localClone ? "/tmp/\(name)" : nil, firstSeen: ago(90 * 1440))
-            r.lastChangeSeen = ago(change); r.newestArchive = ago(archive); r.archiveCount = count; r.newestArchiveSize = size
+        func repo(_ name: String, _ source: RepoSource, change: Double, mirror: Double, kept: Int = 0, size: Int64, status: RepoStatus = .ok, unpushed: Int? = nil) {
+            var r = RepoRecord(fullName: name, source: source, localPath: source == .localClone ? "/tmp/\(name)" : nil, firstSeen: ago(90 * 1440),
+                               hasGitHubRemote: name.contains("/"))
+            r.lastChangeSeen = ago(change); r.mirrorUpdated = ago(mirror); r.sizeOnNAS = size
+            r.deletedRefsKept = (0..<kept).map { "refs/deleted/2026-10-\(10 + $0)/heads/old-\($0)" }
             r.status = status; r.unpushedCommits = unpushed
-            r.newestArchiveName = "x"
+            r.mirrorPath = name.contains("/") ? name + ".git" : "local/\(name).git"
             if status == .goneFromGitHub { r.message = "GitHub says this repo doesn't exist any more." }
             try? store.saveRepo(r)
         }
-        repo("acme/docs-site", .localClone, change: 120, archive: 100, count: 6, size: 41_000_000)
-        repo("personal/dotfiles", .localClone, change: 600, archive: 101, count: 5, size: 400_000, unpushed: 2)
-        repo("acme/keymap-tools", .remoteOnly, change: 480 * 1440, archive: 480 * 1440, count: 1, size: 12_000_000)
-        repo("acme/firmware", .localClone, change: 140, archive: 102, count: 6, size: 38_000_000)
-        repo("acme/old-prototype", .remoteOnly, change: 230 * 1440, archive: 230 * 1440, count: 3, size: 96_000_000, status: .goneFromGitHub)
+        repo("acme/docs-site", .localClone, change: 120, mirror: 100, kept: 1, size: 41_000_000)
+        repo("personal/dotfiles", .localClone, change: 600, mirror: 101, size: 400_000, unpushed: 2)
+        repo("acme/keymap-tools", .remoteOnly, change: 480 * 1440, mirror: 480 * 1440, size: 12_000_000)
+        repo("acme/firmware", .localClone, change: 140, mirror: 102, kept: 3, size: 38_000_000)
+        repo("thesis", .localClone, change: 2000, mirror: 1900, size: 7_300_000)
+        repo("acme/old-prototype", .remoteOnly, change: 230 * 1440, mirror: 230 * 1440, size: 96_000_000, status: .goneFromGitHub)
     }
 
     static func renderAll() {
@@ -207,16 +209,19 @@ enum SampleData {
         let comparing = JobProgress(done: 0, total: 0, bytesDone: 0, bytesTotal: 0, current: "", step: "comparing", changedSoFar: nil, started: ago(6))
         s.jobs = [job("Tresorit", .running, last: ago(120), summary: nil, progress: comparing),
                   job(StoreKey.githubJob, .running, last: ago(1440), summary: nil, kind: .github,
-                      progress: JobProgress(done: 112, total: 171, bytesDone: 0, bytesTotal: 0, current: "acme/firmware", step: "compressing", changedSoFar: 5, started: ago(6)))]
+                      progress: JobProgress(done: 112, total: 171, bytesDone: 0, bytesTotal: 0, current: "acme/firmware", step: "verifying", changedSoFar: 5, started: ago(6)))]
         engine.showSample(s, lastGitHubRun: ghRun())
         render(ActivityView(), "1k-activity-live", width: 980, height: 600)
         render(LiveRunView(job: s.jobs[0]).frame(width: 640), "1l-live-run", width: 640, height: 360)
         render(PopoverView(), "1m-popover-comparing", width: 340)
         render(RunDetailView(run: ghRun()).frame(width: 720), "2d-github-run", width: 720, height: 560)
         render(ReposView(), "2e-repos", width: 1040, height: 360)
-        render(ConfigPane().padding(24), "1h-settings-config", width: 720, height: 980)
-        render(GeneralPane().padding(24), "1i-settings-general", width: 720, height: 520)
-        render(PermissionsPane().padding(24), "1j-settings-permissions", width: 720, height: 460)
+        for (pane, name, height) in [(SettingsPane.nas, "1h-settings-nas", 620.0), (.allFolders, "1h-settings-folders", 900),
+                                     (.folder(0), "1h-settings-folder", 900), (.gitRepos, "1h-settings-repos", 700),
+                                     (.file, "1h-settings-config", 980), (.general, "1i-settings-general", 520),
+                                     (.permissions, "1j-settings-permissions", 520)] {
+            render(SettingsView(initialPane: pane), name, width: 900, height: height)
+        }
         for state in [OverallState.upToDate, .syncing, .away, .paused, .stale, .error] {
             let image = MenuBarIcon.image(for: state, frame: 2)
             image.isTemplate = false

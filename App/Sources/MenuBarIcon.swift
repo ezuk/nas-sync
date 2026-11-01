@@ -5,12 +5,14 @@ import SyncCore
 /// Two stacked drive outlines, with a badge per state (design 1a).
 struct MenuBarIcon: View {
     var state: OverallState
+    @Environment(\.openWindow) private var openWindow
     @State private var frame = 0
     private let timer = Timer.publish(every: 0.12, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Image(nsImage: Self.image(for: state, frame: frame))
             .onReceive(timer) { _ in if state == .syncing { frame = (frame + 1) % 12 } }
+            .onAppear { WindowOpener.action = openWindow }
             .accessibilityLabel(Self.label(state))
     }
 

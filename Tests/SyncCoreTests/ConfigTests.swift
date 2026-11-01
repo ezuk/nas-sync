@@ -159,9 +159,7 @@ import Testing
     exclude = ["vendor/*"]
     remote_only = ["owner/repo"]
     groups = { "Owner-A" = "a", "*" = "misc" }
-
-    [github.keep]
-    daily = 5
+    on_remote_delete = "prune"
     """
 
     @Test func decodesFullConfig() throws {
@@ -189,8 +187,12 @@ import Testing
         #expect(gh.scan.first?.path == "/home/test/Code")
         #expect(gh.group(forOwner: "owner-a") == "a")
         #expect(gh.group(forOwner: "someone") == "misc")
-        #expect(gh.keep.daily == 5)
-        #expect(gh.keep.max == 6)
+        #expect(gh.onRemoteDelete == .prune)
+        #expect(gh.newRepos == .prompt)
+        #expect(gh.groupList.map(\.owner) == ["Owner-A", "*"])
+        #expect(folder.ownExclude == ["**/node_modules"])
+        #expect(folder.overrides == ["at_most_every"])
+        #expect(folder.enabled)
         #expect(gh.dest == "github-backups")
     }
 
@@ -287,13 +289,13 @@ import Testing
     @Test func addsToEmptyAndMultiLineArrays() throws {
         let empty = try ConfigEditor.addRemoteOnly("c/d", to: base + "[github]\nremote_only = []\n")
         #expect(empty.contains("remote_only = [\"c/d\"]"))
-        let multi = try ConfigEditor.addRemoteOnly("c/d", to: base + "[github]\nremote_only = [\n  \"a/b\"\n]\n\n[github.keep]\nmax = 6\n")
+        let multi = try ConfigEditor.addRemoteOnly("c/d", to: base + "[github]\nremote_only = [\n  \"a/b\"\n]\n\n[folders]\narchive_days = 6\n")
         #expect(multi.contains("  \"a/b\",\n  \"c/d\",\n]"))
     }
 
     @Test func addsKeyWhenMissing() throws {
-        let out = try ConfigEditor.addRemoteOnly("c/d", to: base + "[github]\nscan = []\n\n[github.keep]\nmax = 6\n")
-        #expect(out.contains("scan = []\nremote_only = [\"c/d\"]\n\n[github.keep]"))
+        let out = try ConfigEditor.addRemoteOnly("c/d", to: base + "[github]\nscan = []\n\n[folders]\narchive_days = 6\n")
+        #expect(out.contains("scan = []\nremote_only = [\"c/d\"]\n\n[folders]"))
         #expect(throws: ConfigEditor.EditError.self) { try ConfigEditor.addRemoteOnly("c/d", to: base) }
     }
 }

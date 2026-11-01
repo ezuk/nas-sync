@@ -128,10 +128,23 @@ final class AppModel {
 /// Opens windows from places that don't have SwiftUI's environment.
 @MainActor
 enum WindowOpener {
-    static var action: OpenWindowAction?
+    static var action: OpenWindowAction? {
+        didSet {
+            if let id = pending {
+                pending = nil
+                open(id)
+            }
+        }
+    }
+    /// A window asked for before SwiftUI provided `action`.
+    private static var pending: String?
 
     static func open(_ id: String) {
-        action?(id: id)
+        guard let action else {
+            pending = id
+            return
+        }
+        action(id: id)
         NSApp.activate()
     }
 }

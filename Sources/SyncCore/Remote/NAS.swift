@@ -193,6 +193,58 @@ public final class NAS: Sendable {
         return Int64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
     }
 
+    /// Makes the folder `rel` an exact copy of a local folder, in two passes so a git repository on the NAS gets
+    /// its objects before the refs that point at them. rsync sends a folder's files before its subfolders, so
+    /// the first pass leaves out `packed-refs`. The second sends it and deletes files not in the local folder.
+    /// Returns the number of bytes copied.
+    @discardableResult
+    public func uploadFolder(_ local: URL, to rel: String, isCancelled: @Sendable () -> Bool = { false }) throws -> Int64 {
+        guard let rsync else { throw CommandError(tool: "rsync", status: -1, output: Rsync.missingMessage) }
+        try makeDirectory(rel)
+        var sent: Int64 = 0
+        for pass in ["--exclude=/packed-refs", "--delete-after"] {
+            let r = try Command.run(rsync, ["-rt", pass, "--stats"] + rsyncTransportArgs.filter { !$0.hasPrefix("--iconv") }
+                                    + [local.path(percentEncoded: false) + "/", rsyncTarget(rel) + "/"],
+                                    timeout: 6 * 3600, isCancelled: isCancelled)
+            guard r.status == 0 else { throw CommandError(tool: "rsync", status: r.status, output: FolderSync.explain(r)) }
+            sent += Self.transferredBytes(r.stdout)
+        }
+        return sent
+    }
+
+    /// "Total transferred file size: 1,234 bytes" from rsync's `--stats`.
+    static func transferredBytes(_ stats: String) -> Int64 {
+        let prefix = "Total transferred file size:"
+        guard let line = stats.split(separator: "\n").first(where: { $0.hasPrefix(prefix) }) else { return 0 }
+        return Int64(line.dropFirst(prefix.count).drop { $0 == " " }.prefix { $0.isNumber || $0 == "," }.filter(\.isNumber)) ?? 0
+    }
+
+    /// Copies the folder `rel` on the NAS into a local folder, which is created if needed.
+    public func downloadFolder(_ rel: String, to local: URL, isCancelled: @Sendable () -> Bool = { false }) throws {
+        guard let rsync else { throw CommandError(tool: "rsync", status: -1, output: Rsync.missingMessage) }
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        let r = try Command.run(rsync, ["-rt"] + rsyncTransportArgs.filter { !$0.hasPrefix("--iconv") }
+                                + [rsyncTarget(rel) + "/", local.path(percentEncoded: false) + "/"],
+                                timeout: 6 * 3600, isCancelled: isCancelled)
+        guard r.status == 0 else { throw CommandError(tool: "rsync", status: r.status, output: FolderSync.explain(r)) }
+    }
+
+    /// What to pass to `git clone` to get a repository stored at `rel` on the NAS.
+    public func gitCloneURL(_ rel: String) -> String {
+        let path = absolute(rel)
+        guard let login = config.ssh else { return path }
+        return config.port == 22 ? "\(login):\(path)" : "ssh://\(login):\(config.port)\(path)"
+    }
+
+    /// An rsync command that copies the folder `rel` on the NAS into `folder`, for getting a git mirror back from a NAS without git.
+    public func copyDownCommand(_ rel: String, to folder: String) -> String {
+        let path = absolute(rel) + "/"
+        let target = Self.quote(folder + "/")
+        guard let login = config.ssh else { return "rsync -rt \(Self.quote(path)) \(target)" }
+        let shell = config.port == 22 ? "" : " -e 'ssh -p \(config.port)'"
+        return "rsync -rt\(shell) --rsync-path=\(config.remoteRsync) \(Self.quote("\(login):\(path)")) \(target)"
+    }
+
     /// Writes data to `rel`.
     public func write(_ data: Data, to rel: String) throws {
         let temp = FileManager.default.temporaryDirectory.appending(path: "nas-sync-\(UUID().uuidString)-" + (rel as NSString).lastPathComponent)

@@ -351,8 +351,61 @@ public final class Engine {
     }
 
     public func dismissNewRepos() {
-        store.setValue(nil, for: "newRepos")
+        store.setValue(nil, for: StoreKey.newRepos)
         status.github?.newRepos = []
+    }
+
+    /// Newly found repos: waiting for a decision with `new_repos = "prompt"`, otherwise just reported.
+    public var newRepos: [String] { Self.readList(store.value(StoreKey.newRepos)) }
+
+    /// Backs up newly found repos from now on (the answer to `new_repos = "prompt"`) and starts a repo backup.
+    public func includeNewRepos(_ names: [String]) {
+        let now = Date()
+        for name in names where store.repo(name) == nil {
+            try? store.saveRepo(RepoRecord(fullName: name, source: .localClone, localPath: nil, firstSeen: now, hasGitHubRemote: name.contains("/")))
+        }
+        dropNewRepos(names)
+        backUpReposNow()
+    }
+
+    /// Never backs up these repos: adds them to `github.exclude` in the config file (keeping its comments),
+    /// reloads it and drops them from the list of new repos. Throws, changing nothing, if the edit can't be made.
+    public func skipNewRepos(_ names: [String]) throws {
+        var doc = try ConfigDocument(contentsOf: configURL)
+        guard let gh = doc.check().config?.githubSettings else {
+            throw ConfigDocument.EditError(errorDescription: "The config has no [github] section, or it has errors. Fix it first.")
+        }
+        let current = gh.exclude
+        let added = names.filter { name in !current.contains(name) && !gh.excludeSet.matches(name) }
+        if !added.isEmpty {
+            try doc.set("exclude", in: .named("github"), to: .strings(current + added))
+            let check = doc.check()
+            guard check.errors.isEmpty else {
+                throw ConfigDocument.EditError(errorDescription: "Adding to exclude would make the config invalid, so nothing was changed: \(check.errors[0])")
+            }
+            try doc.write(to: configURL)
+            reloadConfig()
+        }
+        dropNewRepos(names)
+    }
+
+    /// Removes names from the list of new repos without deciding anything.
+    public func dropNewRepos(_ names: [String]) {
+        let drop = Set(names.map { $0.lowercased() })
+        let left = newRepos.filter { !drop.contains($0.lowercased()) }
+        store.setValue(left.isEmpty ? nil : left.joined(separator: "\n"), for: StoreKey.newRepos)
+        status.github?.newRepos = left
+    }
+
+    nonisolated static func readList(_ text: String?) -> [String] {
+        text?.split(separator: "\n").map(String.init).filter { !$0.isEmpty } ?? []
+    }
+
+    /// The list after a run. With prompt, exactly the repos the run held back (unless it stopped early);
+    /// otherwise the earlier ones plus the new ones, until dismissed. No duplicates.
+    nonisolated static func mergeNewRepos(existing: [String], found: [String], replace: Bool) -> [String] {
+        var seen: Set<String> = []
+        return (replace ? found : existing + found).filter { seen.insert($0.lowercased()).inserted }
     }
 
     // MARK: Evaluation
@@ -526,7 +579,7 @@ public final class Engine {
         let store = self.store
         let startedAt = Date()
         store.setDate(startedAt, for: StoreKey.lastAttempt(name))
-        progress[name] = JobProgress(done: 0, total: 0, bytesDone: 0, bytesTotal: 0, current: "Finding repos", step: "check", changedSoFar: 0, started: startedAt)
+        progress[name] = JobProgress(done: 0, total: 0, bytesDone: 0, bytesTotal: 0, current: "Finding repos", step: GitHubBackup.Step.checking.rawValue, changedSoFar: 0, started: startedAt)
         evaluateSoon()
         Task.detached(priority: .utility) { [weak self] in
             guard let lock = JobLock(job: name, directory: store.directory) else {
@@ -547,10 +600,10 @@ public final class Engine {
             if let id = try? store.saveRun(record) { record.id = id }
             if record.outcome == .success || record.outcome == .warning { store.setDate(record.started, for: StoreKey.lastSuccess(name)) }
             store.setValue(record.outcome.rawValue, for: StoreKey.lastResult(name))
-            if !result.newRepos.isEmpty {
-                let existing = store.value("newRepos")?.split(separator: "\n").map(String.init) ?? []
-                store.setValue((existing + result.newRepos).joined(separator: "\n"), for: "newRepos")
-            }
+            let existing = Engine.readList(store.value(StoreKey.newRepos))
+            let replace = gh.newRepos == .prompt && record.outcome != .cancelled && record.outcome != .blocked
+            let merged = Engine.mergeNewRepos(existing: existing, found: result.newRepos, replace: replace)
+            if merged != existing { store.setValue(merged.isEmpty ? nil : merged.joined(separator: "\n"), for: StoreKey.newRepos) }
             await MainActor.run { self?.finished(name, record: record, requeue: nil) }
         }
     }
@@ -606,7 +659,7 @@ public final class Engine {
             j.nextRun = Schedule.nextDue(lastSuccess: j.lastSuccess, every: gh.every, around: gh.around, now: now)
             jobs.append(j)
             let repos = store.repos()
-            let newRepos = store.value("newRepos")?.split(separator: "\n").map(String.init) ?? []
+            let newRepos = Self.readList(store.value(StoreKey.newRepos))
             status.github = GitHubSummary(
                 repoCount: repos.filter { $0.status != .excluded }.count,
                 localClones: repos.filter { $0.source == .localClone && $0.status != .excluded }.count,

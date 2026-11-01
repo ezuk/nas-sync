@@ -34,9 +34,10 @@ func usage() {
       diagnose                     run the NAS checklist step by step
       run folders [name] [--dry-run] [-v] [--allow-mass-delete]
                                    compare and copy folder jobs now
-      run github [--dry-run] [-v]  back up GitHub repos now
+      run github [--dry-run] [-v]  back up git repos now
+      mirror [repo]                show where each repo's git mirror is on the NAS and how to clone it
       unpack <archive.bundle.xz> [out]
-                                   decompress a GitHub archive to a .bundle you can git clone
+                                   decompress an archive made by older versions to a .bundle you can git clone
     """)
 }
 
@@ -151,6 +152,29 @@ case "diagnose":
     }
     if wifi == nil { print("(Wi-Fi name isn't visible to command-line tools, so the Wi-Fi step was assumed.)") }
 
+case "mirror":
+    let config = loadConfig()
+    guard let gh = config.githubSettings else { fail("There's no [github] section in the config.") }
+    let nas = NAS(config: config.nas)
+    let query = args.count > 1 ? args[1].lowercased() : nil
+    let repos = openStore().repos().filter { r in r.mirrorPath != nil && (query.map { r.fullName.lowercased().contains($0) } ?? true) }
+    if repos.isEmpty { fail(query == nil ? "No repo has a mirror on the NAS yet." : "No backed-up repo matches \(args[1]).") }
+    for r in repos {
+        let path = GitHubBackup.nasMirrorPath(dest: gh.dest, mirrorPath: r.mirrorPath!)
+        let folder = (path as NSString).lastPathComponent
+        let kept = r.deletedRefsKept.isEmpty ? "" : " · \(Format.count(r.deletedRefsKept.count, "deleted ref")) kept"
+        print("\(r.fullName)\(r.sizeOnNAS.map { " (\(Format.bytes($0)))" } ?? "")\(kept)")
+        print("  git clone \(nas.gitCloneURL(path))")
+        print("  no git on the NAS: \(nas.copyDownCommand(path, to: folder)) && git clone \(folder)")
+    }
+    print("""
+
+    git clone over SSH needs git on the NAS. Without it, git says git-upload-pack isn't found; use the rsync line.
+    A clone gets every branch and tag. Branches and tags deleted at the source are kept in the mirror
+    under refs/deleted/<day>/. To see them, clone with --mirror and run: git for-each-ref refs/deleted
+    or fetch them into a clone with: git fetch origin 'refs/deleted/*:refs/deleted/*'
+    """)
+
 case "unpack":
     guard args.count > 1 else { fail("usage: nas-sync unpack <archive.bundle.xz> [out]") }
     let input = URL(filePath: (args[1] as NSString).expandingTildeInPath)
@@ -158,6 +182,7 @@ case "unpack":
     let output = args.count > 2 ? URL(filePath: (args[2] as NSString).expandingTildeInPath) : URL(filePath: FileManager.default.currentDirectoryPath).appending(path: name)
     do { try XZ.decompress(input, to: output) } catch { fail("Couldn't unpack: \(error.localizedDescription)") }
     print("Wrote \(output.path(percentEncoded: false)). Restore with: git clone \"\(output.lastPathComponent)\" <folder>")
+    print("(Newer backups are git mirrors you can clone directly; see: nas-sync mirror)")
 
 case "run":
     args.removeFirst()
@@ -180,7 +205,7 @@ case "run":
             printRun(r)
         }
     case "github":
-        guard let gh = config.github else { fail("There's no [github] section in the config.") }
+        guard let gh = config.github else { fail("GitHub backups are off: there's no [github] section, or it has enabled = false.") }
         guard let lock = JobLock(job: StoreKey.githubJob, directory: store.directory) else { fail("GitHub backups are already running in the app.") }
         let backup = GitHubBackup(config: gh, nas: nas, store: store)
         let result = backup.run(trigger: "command line", dryRun: dryRun, isCancelled: { cancel.isCancelled }, progress: { p in
@@ -194,6 +219,9 @@ case "run":
             }
         }
         printRun(result.record)
+        if gh.newRepos == .prompt, !result.newRepos.isEmpty {
+            print("\(Format.count(result.newRepos.count, "new repo")) waiting for you to decide in the menu (or add them to repos or exclude): \(result.newRepos.joined(separator: ", "))")
+        }
     default:
         usage()
         exit(1)

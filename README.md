@@ -14,7 +14,7 @@ NAS Sync does the whole job in one small app:
 
 - Folders are copied one way to the NAS shortly after they change. Your Mac is never modified.
 - Deleting or overwriting a file on your Mac doesn't lose it on the NAS. The old version moves to a dated `_archive` folder and stays there for as long as you choose.
-- GitHub repos are backed up as single compressed git bundles, with daily, weekly and monthly copies kept. Repos on your Mac are backed up from your Mac, so commits you haven't pushed and branches that only exist locally are included.
+- Git repos are kept on the NAS as one git mirror each, which you can clone straight back. Repos on your Mac are backed up from your Mac, so commits you haven't pushed and branches that only exist locally are included, and so are repos that aren't on GitHub at all. Branches deleted or force-pushed later are kept, so the NAS never loses work.
 - On someone else's network it does nothing and says so. On battery with a low charge it waits, but never longer than you allow.
 - You get a notification when something breaks, when it recovers, or when a backup hasn't succeeded for too long. Otherwise you can forget it's there.
 - All settings live in one text file. You can edit it by hand, keep it with your dotfiles, or ask an LLM to change it. The app reloads it when you save and points out mistakes with line numbers.
@@ -73,20 +73,24 @@ In the last case the menu asks you to confirm, and you can allow that one run. F
 
 Once a day, around the time you set, the app goes through your repos.
 
-It finds them in two ways. It searches the folders listed in `scan` for git repos whose remote is on GitHub. It also backs up the repos listed in `remote_only`, which you don't have on your Mac; it keeps a hidden copy of each and downloads updates from GitHub before backing it up.
+It finds them in three ways. It searches the folders listed in `scan` for git repos whose remote is on GitHub. It backs up the clones listed in `repos`, wherever they are on your Mac; these don't need a GitHub remote. And it backs up the repos listed in `remote_only`, which you don't have on your Mac, straight from GitHub.
 
-For each repo it reads where every branch and tag points (and your stash, for repos on your Mac) and compares that with the last run. If nothing moved and the newest copy is still on the NAS, the repo is skipped. Otherwise the app writes down what changed, such as "3 new commits on main, new branch fix/x, 2 commits not pushed to GitHub yet", and makes a new copy:
+Each repo becomes one bare git mirror on the NAS, at `github-backups/mirrors/<group>/<repo>.git`. Groups sort repos into folders by owner; repos with no GitHub remote go in `mirrors/local`, and for those the NAS has the only other copy.
 
-1. `git bundle create --all` packs every branch, tag and commit into one file.
-2. `git bundle verify` checks that the file is complete.
-3. xz compresses it.
-4. rsync sends it to the NAS. The NAS then checksums the copy with SHA-256. If it doesn't match the file on the Mac, the copy is deleted and the repo is marked as failed.
+For each repo the app reads where every branch and tag points (and your stash, for repos on your Mac) and compares that with the last run. If nothing moved and the mirror is on the NAS, the repo is skipped. Otherwise it writes down what changed, such as "3 new commits on main, new branch fix/x, 2 commits not pushed to GitHub yet", and updates the mirror:
 
-Copies land in `github-backups/bundles/<group>/<repo>/YYMMDD-owner-repo.bundle.xz`. Groups sort repos into folders by owner.
+1. It fetches every branch and tag into its copy of the mirror on this Mac (in the app's cache folder). If that copy is missing, it first copies the mirror back from the NAS, so a lost cache never makes the NAS copy smaller.
+2. Branches and tags that no longer exist at the source aren't deleted. They move to `refs/deleted/<day>/heads/<branch>` (or `.../tags/<tag>`) in the mirror and stay there. The old tip of a force-pushed branch is kept the same way. Set `on_remote_delete = "prune"` if you'd rather the mirror match the source exactly.
+3. `git fsck` checks that every ref's history is complete. If it isn't, nothing is copied.
+4. rsync copies the mirror to the NAS. Only new files travel, so a small change is a small copy.
 
-After a new copy, older ones are pruned. By default each repo keeps the three newest, one from the past week, one from the past month and one between two months and a year old, up to six in total. The last copy of a repo is never deleted, and nothing is pruned for a repo that has disappeared from GitHub or from your Mac.
+A repo that GitHub says no longer exists keeps its mirror untouched and is marked "Gone from GitHub". A clone that disappears from your Mac keeps its mirror too.
+
+New clones in your scan folders aren't backed up until you say so (`new_repos = "prompt"`): the menu lists them with Back Up and Skip buttons. Skip adds the repo to `exclude` in the config file. Clones listed in `repos` count as already decided.
 
 Each run also leaves a short report in `github-backups/reports` on the NAS, kept for 90 days.
+
+Versions before the mirrors kept dated `.bundle.xz` archives in `github-backups/bundles`. They are left where they are; `nas-sync unpack` still turns one back into a repo.
 
 ### Home, battery and notifications
 
@@ -153,11 +157,11 @@ The app asks for a few permissions:
 - Local Network, which macOS asks for the first time the app contacts the NAS.
 - Full Disk Access, only if a folder you back up is protected, such as Desktop, Documents or a cloud drive folder. Settings > Permissions has a button for it.
 
-Settings opens and offers to create a starter config at `~/.config/nas-sync/config.toml`. Fill in your Wi-Fi name, your NAS login and the folders you want backed up, then save. Finally, turn on Launch at login in Settings.
+Settings opens by itself on first launch, with your Wi-Fi name filled in from the network you're on. Fill in your NAS login and base folder, and add the folders you want backed up. The config is saved to `~/.config/nas-sync/config.toml` as soon as it's valid. Finally, turn on Launch at login in Settings.
 
 ## Configuration
 
-Everything is in one TOML file. Times look like `"30s"`, `"15m"`, `"12h"` or `"2d"`, and paths may start with `~`. The app reloads the file when you save it. If you save a mistake, it keeps running on the last valid version and shows what's wrong, with line numbers.
+Everything is in one TOML file. Settings edits every setting in a form, and writes your changes back into the file without touching its comments; its Config File page shows the file itself. Times look like `"30s"`, `"15m"`, `"12h"` or `"2d"`, and paths may start with `~`. The app reloads the file when you save it. If you save a mistake, it keeps running on the last valid version and shows what's wrong, with line numbers.
 
 ![The config file in Settings, checked and valid](docs/screenshots/settings-config.png)
 
@@ -199,6 +203,7 @@ every = "24h"
 around = "03:00"
 dest = "github-backups"
 scan = ["~/Code"]                   # local clones found here
+repos = ["~/Documents/thesis"]      # clones elsewhere; a GitHub remote is optional
 remote_only = ["someone/repo"]      # repos with no local clone
 exclude = ["someone/big-fork"]
 groups = { "my-org" = "my-org", "*" = "other" }
@@ -236,12 +241,12 @@ groups = { "my-org" = "my-org", "*" = "other" }
 | `name` | | A short name shown in the app. |
 | `source` | | The folder on your Mac. |
 | `dest` | | The folder on the NAS, inside `nas.path`. |
-| `enabled` | `true` | Set to `false` to pause a job without deleting it. |
+| `enabled` | `true` | Set to `false` to pause a job without deleting it. Its NAS folder is left alone. |
 | `exclude` | see below | Patterns to skip. A job's list is added to the defaults. |
 | `archive_days` | `90` | How long replaced and deleted files stay in `_archive`. |
 | `stale_after` | `24h` | Warn if the job hasn't succeeded for this long while you were home. |
 | `quiet_period` | `30s` | Wait for changes to settle before copying. |
-| `at_most_every` | off | Sync changes at most this often. |
+| `at_most_every` | off | Sync changes at most this often. A `[[folder]]` can set `"off"` to opt out of a limit set in `[folders]`. |
 | `max_delete_percent` | `20` | Stop and ask if a run would archive more than this share of the backup. |
 | `max_delete_files` | `1000` | Stop and ask if a run would archive more than this many files. |
 | `nightly_check` | `03:00` | When to compare every folder in full. Set in `[folders]` only. |
@@ -252,18 +257,21 @@ The default excludes cover macOS clutter (`.DS_Store`, `._*`, `Icon\r`, trash an
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `enabled` | `true` | Set to `false` to stop repo backups but keep these settings. |
 | `every` | `24h` | How often to run. |
 | `around` | | Preferred time of day. A missed run catches up later. |
 | `stale_after` | `48h` | Warn if no run has succeeded for this long while you were home. |
 | `dest` | `github-backups` | Folder on the NAS, inside `nas.path`. |
-| `scan` | `[]` | Folders to search for local clones. |
+| `scan` | `[]` | Folders to search for local clones with a GitHub remote. |
+| `repos` | `[]` | Clones anywhere on your Mac to back up. A GitHub remote is optional; repos without one go in `mirrors/local` and are named after their folder. |
 | `remote_only` | `[]` | `owner/repo` names to back up straight from GitHub. |
-| `exclude` | `[]` | Repos to skip. `owner/*` works. |
-| `new_repos` | `include` | Whether newly found clones are backed up (`include`) or only reported (`ignore`). |
-| `groups` | `{ "*" = "other" }` | Which NAS folder each owner's repos go in. `*` catches the rest. |
-| `gc` | `false` | Run `git gc` on local clones before bundling. |
+| `exclude` | `[]` | Repos to skip. `owner/*` works; a repo without a GitHub remote matches by its folder name. |
+| `new_repos` | `prompt` | What happens to a clone that shows up in `scan` later: wait for you to decide in the menu (`prompt`), back it up (`include`), or only mention it (`ignore`). |
+| `on_remote_delete` | `keep` | What the NAS mirror does with a branch or tag deleted at the source: keep it under `refs/deleted/<day>/` (`keep`) or delete it too (`prune`). |
+| `groups` | `{ "*" = "other" }` | Which NAS folder each owner's repos go in. `*` catches the rest. `local` is kept for repos without a GitHub remote. |
+| `gc` | `false` | Run `git gc` on local clones before backing them up. |
 
-How many copies to keep goes in `[github.keep]`, with `daily = 3`, `weekly = 1`, `monthly = 1`, `quarterly = 1` and `max = 6` as the defaults.
+`[github.keep]` from older versions is no longer used; the checker warns about it, and you can delete it.
 
 ## Using it
 
@@ -276,20 +284,34 @@ Most of the time there's nothing to do. The menu bar icon shows the overall stat
 - confirm a run that stopped at the safety limit
 - open Activity (⌘L), Repos (⌘R) or the config (⌘,)
 
-When it finds a new repo in your scan folders, the menu says so and offers to exclude it.
+When it finds a new repo in your scan folders, the menu asks whether to back it up or skip it.
 
 ### Getting files back
 
 Folder backups are plain files on the NAS, so you can copy them back with Finder, your NAS's file manager, `scp` or `rsync`. Older versions are under `_archive/<day>/<time>/` in the same folder, at the same path they had in the source.
 
-A GitHub copy turns back into a repo in two steps:
+A repo's mirror on the NAS is an ordinary git repository, so you clone it back:
+
+```sh
+git clone me@nas.local:/volume1/homes/me/github-backups/mirrors/my-org/app.git app
+swift run nas-sync mirror app       # prints the commands for each matching repo
+```
+
+Cloning over SSH needs git on the NAS. Without it, git stops with `git-upload-pack: command not found`. In that case copy the mirror down with rsync and clone the copy. `nas-sync mirror` prints this command too:
+
+```sh
+rsync -rt --rsync-path=/usr/bin/rsync 'me@nas.local:/volume1/homes/me/github-backups/mirrors/my-org/app.git/' 'app.git/'
+git clone app.git
+```
+
+The clone has every branch and tag as of the last backup. Branches and tags that were deleted or force-pushed at the source are kept under `refs/deleted/`. To see them, clone with `--mirror` and run `git for-each-ref refs/deleted`, or bring them into a normal clone with `git fetch origin 'refs/deleted/*:refs/deleted/*'`. In the Repos window, right-click a repo and choose Copy Mirror Path on NAS.
+
+Archives from older versions (`github-backups/bundles/.../*.bundle.xz`) turn back into a repo in two steps:
 
 ```sh
 swift run nas-sync unpack 261029-owner-repo.bundle.xz    # or: xz -dk 261029-owner-repo.bundle.xz
 git clone 261029-owner-repo.bundle repo
 ```
-
-The clone has every branch and tag that existed when the copy was made.
 
 ## Command-line tool
 
@@ -304,6 +326,7 @@ swift run nas-sync watch                       # follow the app live: status cha
 swift run nas-sync run folders --dry-run       # show what a full check would copy and archive
 swift run nas-sync run folders --dry-run --allow-mass-delete -v   # list everything, even past the safety limits
 swift run nas-sync run github --dry-run -v     # show which repos would be backed up and why
+swift run nas-sync mirror [repo]               # where each repo's mirror is on the NAS, and the git clone command
 ```
 
 ## Troubleshooting
@@ -321,7 +344,7 @@ swift run nas-sync run github --dry-run -v     # show which repos would be backe
 ## Development
 
 ```sh
-swift test       # unit tests; they use throwaway folders and git repos, and the folder tests need rsync 3
+swift test       # unit tests; they use throwaway folders and git repos, and the folder and repo tests need rsync 3
 ```
 
 In a Debug build, `"NAS Sync.app/Contents/MacOS/NAS Sync" --render-samples <folder>` renders every screen with made-up data to PNG files without syncing anything. The screenshots in this README come from there.

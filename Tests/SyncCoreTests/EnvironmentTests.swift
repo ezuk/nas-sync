@@ -8,6 +8,17 @@ import Testing
         #expect(NAS.quote("it's here") == "'it'\\''s here'")
     }
 
+    @Test func commandsForGettingAMirrorBack() {
+        let ssh = NAS(config: NASConfig(ssh: "me@nas.local", path: "/volume1/me"))
+        #expect(ssh.gitCloneURL("m/a.git") == "me@nas.local:/volume1/me/m/a.git")
+        #expect(ssh.copyDownCommand("m/a.git", to: "a.git") == "rsync -rt --rsync-path=/usr/bin/rsync 'me@nas.local:/volume1/me/m/a.git/' 'a.git/'")
+        let port = NAS(config: NASConfig(ssh: "me@nas.local", port: 5577, path: "/volume1/me"))
+        #expect(port.gitCloneURL("m/a.git") == "ssh://me@nas.local:5577/volume1/me/m/a.git")
+        #expect(port.copyDownCommand("m/a.git", to: "a.git") == "rsync -rt -e 'ssh -p 5577' --rsync-path=/usr/bin/rsync 'me@nas.local:/volume1/me/m/a.git/' 'a.git/'")
+        let local = NAS(config: NASConfig(ssh: nil, path: "/Volumes/Backup"))
+        #expect(local.copyDownCommand("m/a.git", to: "a.git") == "rsync -rt '/Volumes/Backup/m/a.git/' 'a.git/'")
+    }
+
     @Test(.enabled(if: Rsync.find() != nil)) func localNASFileOperations() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "nassync-nas-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -26,6 +37,37 @@ import Testing
 
         let missing = NAS(config: NASConfig(ssh: nil, path: root.appending(path: "nope").path(percentEncoded: false)))
         guard case .failure(.pathMissing) = missing.check() else { Issue.record("expected pathMissing"); return }
+    }
+
+    @Test(.enabled(if: Rsync.find() != nil)) func uploadFolderSendsPackedRefsLast() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appending(path: "nassync-upload-\(UUID().uuidString)")
+        let local = root.appending(path: "local")
+        let nasRoot = root.appending(path: "nas")
+        try fm.createDirectory(at: local.appending(path: "objects"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: nasRoot.appending(path: "a.git"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        try Data("refs".utf8).write(to: local.appending(path: "packed-refs"))
+        try Data("object".utf8).write(to: local.appending(path: "objects/a"))
+        try Data("old".utf8).write(to: nasRoot.appending(path: "a.git/stale"))
+
+        // Logs each rsync call, then runs the real one.
+        let log = root.appending(path: "rsync.log").path(percentEncoded: false)
+        let wrapper = root.appending(path: "rsync")
+        let real = try #require(Rsync.find()).path(percentEncoded: false)
+        try Data("#!/bin/sh\necho \"$*\" >> '\(log)'\nexec '\(real)' \"$@\"\n".utf8).write(to: wrapper)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path(percentEncoded: false))
+
+        let nas = NAS(config: NASConfig(ssh: nil, path: nasRoot.path(percentEncoded: false), rsync: wrapper.path(percentEncoded: false)))
+        let sent = try nas.uploadFolder(local, to: "a.git")
+
+        let calls = try String(contentsOfFile: log, encoding: .utf8).split(separator: "\n").filter { $0.contains("--stats") }
+        #expect(calls.count == 2)
+        #expect(calls[0].contains("--exclude=/packed-refs") && !calls[0].contains("--delete-after"))
+        #expect(calls[1].contains("--delete-after") && !calls[1].contains("--exclude"))
+        #expect(sent == 10)
+        let tree = try #require(try nas.listTree("a.git")).map(\.path)
+        #expect(tree.contains("packed-refs") && tree.contains("objects/a") && !tree.contains("stale"))
     }
 
     @Test func batteryRule() {

@@ -1,7 +1,7 @@
 import SwiftUI
 import SyncCore
 
-/// Every known repo and where its newest archive stands (design 2e).
+/// Every known repo and the state of its git mirror on the NAS (design 2e).
 struct ReposView: View {
     @Environment(AppModel.self) private var model
     @State private var repos: [RepoRecord] = []
@@ -32,7 +32,7 @@ struct ReposView: View {
             .padding(.vertical, 10)
             Divider()
             table
-            Text("“Unchanged since” is fine: the newest archive already holds every branch and tag up to that day.")
+            Text("Each repo is one git mirror on the NAS. Branches and tags deleted or force-pushed at the source stay in it under refs/deleted.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.vertical, 8)
@@ -73,6 +73,7 @@ struct ReposView: View {
             TableColumn("Source") { r in
                 HStack(spacing: 6) {
                     Text(r.source == .localClone ? "Local clone" : "Remote only")
+                    if !r.hasGitHubRemote { Tag(text: "No GitHub remote", style: .local).help("No GitHub remote. The NAS has the only other copy.") }
                     if let n = r.unpushedCommits, n > 0 { Tag(text: "\(n) unpushed", style: .local) }
                     if r.usesLFS { Tag(text: "LFS not included", style: .archived) }
                     switch r.status {
@@ -81,27 +82,30 @@ struct ReposView: View {
                     case .failed: Tag(text: "Failed", style: .bad)
                     default: EmptyView()
                     }
-                    if Date().timeIntervalSince(r.firstSeen) < 3 * 86400, r.status == .ok, r.archiveCount <= 1 { Tag(text: "New", style: .new) }
+                    if Date().timeIntervalSince(r.firstSeen) < 3 * 86400, r.status == .ok { Tag(text: "New", style: .new) }
                 }
-                .help(r.message ?? "")
+                .help(r.message ?? (r.hasGitHubRemote ? "" : "No GitHub remote. The NAS has the only other copy."))
             }
             .width(min: 140, ideal: 220)
             TableColumn("Last change seen") { r in Text(date(r.lastChangeSeen)) }.width(min: 90, ideal: 120)
-            TableColumn("Newest archive") { r in Text(date(r.newestArchive)).help(r.newestArchiveName ?? "") }.width(min: 90, ideal: 120)
-            TableColumn("Archives kept") { r in Text(r.archiveCount.formatted()).monospacedDigit() }.width(min: 60, ideal: 90)
-            TableColumn("Size") { r in
-                Text(r.newestArchiveSize.map(Format.bytes) ?? "–").monospacedDigit().frame(maxWidth: .infinity, alignment: .trailing)
+            TableColumn("Mirror updated") { r in Text(date(r.mirrorUpdated)).help(r.mirrorPath ?? "") }.width(min: 90, ideal: 120)
+            TableColumn("Deleted at source, kept") { r in
+                Text(r.deletedRefsKept.isEmpty ? "–" : r.deletedRefsKept.count.formatted()).monospacedDigit()
+                    .help(r.deletedRefsKept.prefix(20).map { String($0.dropFirst(GitHubBackup.deletedRefsPrefix.count)) }.joined(separator: "\n"))
+            }
+            .width(min: 60, ideal: 130)
+            TableColumn("On NAS") { r in
+                Text(r.sizeOnNAS.map(Format.bytes) ?? "–").monospacedDigit().frame(maxWidth: .infinity, alignment: .trailing)
             }
             .width(min: 60, ideal: 80)
         }
         .contextMenu(forSelectionType: RepoRecord.ID.self) { ids in
             if let id = ids.first, let r = repos.first(where: { $0.id == id }) {
                 if let path = r.localPath { Button("Show Local Clone") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) } }
-                Button("Open on GitHub") { NSWorkspace.shared.open(URL(string: "https://github.com/\(r.fullName)")!) }
-                if let gh = model.engine.config?.github {
-                    Button("Copy Archive Path on NAS") {
-                        let parts = r.fullName.split(separator: "/").map(String.init)
-                        model.copyNASPath("\(gh.dest)/bundles/\(gh.group(forOwner: parts[0]))/\(parts[1])")
+                if let url = r.githubURL { Button("Open on GitHub") { NSWorkspace.shared.open(url) } }
+                if let gh = model.engine.config?.githubSettings, let mirror = r.mirrorPath {
+                    Button("Copy Mirror Path on NAS") {
+                        model.copyNASPath(GitHubBackup.nasMirrorPath(dest: gh.dest, mirrorPath: mirror))
                     }
                 }
                 Divider()
@@ -112,7 +116,7 @@ struct ReposView: View {
 
     private func color(_ r: RepoRecord) -> Color {
         switch r.status {
-        case .ok: r.newestArchive == nil ? Palette.grey : Palette.green
+        case .ok: r.mirrorUpdated == nil ? Palette.grey : Palette.green
         case .excluded: Palette.grey
         case .failed, .goneFromGitHub, .missingLocally: Palette.red
         }
@@ -146,7 +150,7 @@ struct AddRepoSheet: View {
                 TextField("owner/repo or URL", text: $name).font(.system(size: 12.5, design: .monospaced))
                 Text(hint).font(.system(size: 11.5)).foregroundStyle(error == nil ? Color.secondary : Palette.red)
             }
-            Text("Local clones under your scan folders are found automatically. This adds the repo to remote_only, so it's backed up straight from GitHub.")
+            Text("Local clones under your scan folders are found automatically. This adds the repo to remote_only, so it's mirrored straight from GitHub.")
                 .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()

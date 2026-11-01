@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1E05BAE8CD04B43A4C21A22F /* SettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27D861F0BD8A0212C1F5FE71 /* SettingsModel.swift */; };
 		311C3A1791243E415B229FCD /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D709324DE37B31B39AAC47E /* Components.swift */; };
 		34C9BEACFFFFCD50A79B26D2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A8BE15577E1F23156A87BB9C /* Assets.xcassets */; };
 		358958FEB685AF948845D7E4 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = F41A6B7D0E6BE2AC2AD8373E /* SampleData.swift */; };
@@ -15,27 +16,32 @@
 		3641DD8209533CBFFDA6D437 /* ReposView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49D02232187D5AFA29A2E7F /* ReposView.swift */; };
 		4F4D01481A5497FFFCB4689B /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C1751DD3A0432135546368A /* PopoverView.swift */; };
 		5CA7849E208E1ACF71D01EB4 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37B4213562BE4FC1309616C0 /* ActivityView.swift */; };
+		5DCFC6638750004361F676B5 /* SettingsControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8633A7BFD637484BC7D66672 /* SettingsControls.swift */; };
 		7F9AB3D202CC70A3ECC5661C /* NASSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE3064FB488DC7A8DD26F692 /* NASSyncApp.swift */; };
 		AA85D9B770049F817A658238 /* MenuBarIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7130EB69DB11B7D4EA8069 /* MenuBarIcon.swift */; };
 		ADDA866247338CC873447813 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6316AF044BF3F4269C8E49F8 /* AppModel.swift */; };
+		CD59E3EECE58E1BA2DD5AE02 /* SettingsPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB03AA40525143AF31D4945E /* SettingsPanes.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		27D861F0BD8A0212C1F5FE71 /* SettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsModel.swift; sourceTree = "<group>"; };
 		2C1751DD3A0432135546368A /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
 		37B4213562BE4FC1309616C0 /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		6316AF044BF3F4269C8E49F8 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		7D2862073399FDFDB325CF4B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		8633A7BFD637484BC7D66672 /* SettingsControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsControls.swift; sourceTree = "<group>"; };
 		9D709324DE37B31B39AAC47E /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		A8BE15577E1F23156A87BB9C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B2E81A0DC5F793122122EE8A /* nas-sync */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "nas-sync"; path = ..; sourceTree = SOURCE_ROOT; };
 		B49D02232187D5AFA29A2E7F /* ReposView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReposView.swift; sourceTree = "<group>"; };
+		BB03AA40525143AF31D4945E /* SettingsPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPanes.swift; sourceTree = "<group>"; };
 		CBAE6B5BB598F5C799D2CFF7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		DC7130EB69DB11B7D4EA8069 /* MenuBarIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarIcon.swift; sourceTree = "<group>"; };
 		E0131DBCE1D116C7E20E9910 /* NASSync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NASSync.entitlements; sourceTree = "<group>"; };
 		E8A0A5B0CC515DCB8A26AC60 /* NAS Sync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NAS Sync.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F41A6B7D0E6BE2AC2AD8373E /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
 		FE3064FB488DC7A8DD26F692 /* NASSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NASSyncApp.swift; sourceTree = "<group>"; };
-		"TEMP_B116D2EE-28C7-4C1C-9128-8C2C00F5F9C3" /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
+		"TEMP_AF8F1206-7CB9-4849-966C-D7D4B062BA26" /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,6 +85,9 @@
 				2C1751DD3A0432135546368A /* PopoverView.swift */,
 				B49D02232187D5AFA29A2E7F /* ReposView.swift */,
 				F41A6B7D0E6BE2AC2AD8373E /* SampleData.swift */,
+				8633A7BFD637484BC7D66672 /* SettingsControls.swift */,
+				27D861F0BD8A0212C1F5FE71 /* SettingsModel.swift */,
+				BB03AA40525143AF31D4945E /* SettingsPanes.swift */,
 				CBAE6B5BB598F5C799D2CFF7 /* SettingsView.swift */,
 			);
 			path = Sources;
@@ -102,10 +111,10 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
-		"TEMP_CB15B1BD-504F-492B-B0D5-37EE910CC1B6" /* App */ = {
+		"TEMP_C1BB6F3D-DB5F-4014-ABF0-FEFA4C5CE85E" /* App */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_B116D2EE-28C7-4C1C-9128-8C2C00F5F9C3" /* App.xcconfig */,
+				"TEMP_AF8F1206-7CB9-4849-966C-D7D4B062BA26" /* App.xcconfig */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -194,6 +203,9 @@
 				4F4D01481A5497FFFCB4689B /* PopoverView.swift in Sources */,
 				3641DD8209533CBFFDA6D437 /* ReposView.swift in Sources */,
 				358958FEB685AF948845D7E4 /* SampleData.swift in Sources */,
+				5DCFC6638750004361F676B5 /* SettingsControls.swift in Sources */,
+				1E05BAE8CD04B43A4C21A22F /* SettingsModel.swift in Sources */,
+				CD59E3EECE58E1BA2DD5AE02 /* SettingsPanes.swift in Sources */,
 				35E07C97A3E74D2A2185112E /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -222,7 +234,7 @@
 		};
 		844E5D2A5A22ED5806D19835 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_B116D2EE-28C7-4C1C-9128-8C2C00F5F9C3" /* App.xcconfig */;
+			baseConfigurationReference = "TEMP_AF8F1206-7CB9-4849-966C-D7D4B062BA26" /* App.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -286,7 +298,7 @@
 		};
 		9391C2F78D1BB10FC6CFC467 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_B116D2EE-28C7-4C1C-9128-8C2C00F5F9C3" /* App.xcconfig */;
+			baseConfigurationReference = "TEMP_AF8F1206-7CB9-4849-966C-D7D4B062BA26" /* App.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

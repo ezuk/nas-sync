@@ -131,6 +131,8 @@ final class AppModel {
             return s.isHome && s.nasConnected && s.pausedUntil == nil && s.githubJob?.state != .running
         case .syncAgain:
             return s.isHome && s.nasConnected && s.pausedUntil == nil && !s.folderJobs.contains { $0.state == .running }
+        case .checkHelperAgain:
+            return s.nasConnected
         default:
             return true
         }
@@ -157,6 +159,8 @@ final class AppModel {
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") { NSWorkspace.shared.open(url) }
         case .openSettings:
             WindowOpener.open(WindowID.settings)
+        case .checkHelperAgain:
+            engine.checkHelperNow()
         }
     }
 

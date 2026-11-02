@@ -202,6 +202,50 @@ private func makeEngine(_ world: FakeWorld) throws -> Engine {
         #expect(world.nasFile("a.txt") == "A")
     }
 
+    @Test func checksTheHelperOnceConnectedAndRecordsChanges() async throws {
+        let world = try FakeWorld()
+        let file = try FileHandle(forWritingTo: world.configURL)
+        try file.seekToEnd()
+        try file.write(contentsOf: Data("\n[github]\ndest = \"gh\"\n".utf8))
+        try file.close()
+        let calls = LockedBox(0)
+        var environment = world.environment
+        environment.helper = { _ in
+            calls.set(calls.get() + 1)
+            return HelperReport(state: .ready, installedVersion: 2, bundledVersion: 2, change: .updated)
+        }
+        let engine = Engine(configURL: world.configURL, store: try Store(directory: world.state), environment: environment)
+        engine.locationAllowed = true
+        engine.checksHelperOnLocalFolder = true
+        engine.start()
+        defer { engine.stop() }
+
+        await waitUntil { engine.status.helper != nil }
+        #expect(engine.status.helper?.installedVersion == 2)
+        #expect(calls.get() == 1)
+        #expect(try engine.store.recentRuns(kinds: [.helper]).first?.summary == "Updated NAS helper to version 2")
+    }
+
+    @Test func doesntCheckTheHelperWithoutGitHubBackups() async throws {
+        let world = try FakeWorld()
+        let calls = LockedBox(0)
+        var environment = world.environment
+        environment.helper = { _ in
+            calls.set(calls.get() + 1)
+            return HelperReport(state: .ready, installedVersion: 1, bundledVersion: 1)
+        }
+        let engine = Engine(configURL: world.configURL, store: try Store(directory: world.state), environment: environment)
+        engine.locationAllowed = true
+        engine.checksHelperOnLocalFolder = true
+        engine.start()
+        defer { engine.stop() }
+
+        await waitUntil { engine.status.nasConnected }
+        await waitUntil(1) { false }
+        #expect(calls.get() == 0)
+        #expect(engine.status.helper == nil)
+    }
+
     @Test func reportsConnectionFailureOnceAndRecovers() async throws {
         let world = try FakeWorld()
         world.reachable.set(false)

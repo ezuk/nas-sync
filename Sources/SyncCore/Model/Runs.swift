@@ -8,6 +8,7 @@ public enum RunKind: String, Sendable, Codable, CaseIterable {
     case mount
     case away
     case hold
+    case helper
 }
 
 public enum RunOutcome: String, Sendable, Codable {

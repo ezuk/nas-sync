@@ -36,6 +36,8 @@ func usage() {
                                    compare and copy folder jobs now
       run github [--dry-run] [-v]  back up git repos now
       mirror [repo]                show where each repo's git mirror is on the NAS and how to clone it
+      helper status [--json]       show the helper on the NAS and its health, without changing anything
+      helper install [--json]      install or update the helper on the NAS if needed, then show its health
       unpack <archive.bundle.xz> [out]
                                    decompress an archive made by older versions to a .bundle you can git clone
     """)
@@ -174,6 +176,62 @@ case "mirror":
     under refs/deleted/<day>/. To see them, clone with --mirror and run: git for-each-ref refs/deleted
     or fetch them into a clone with: git fetch origin 'refs/deleted/*:refs/deleted/*'
     """)
+
+case "helper":
+    let config = loadConfig()
+    let nas = NAS(config: config.nas)
+    guard nas.isRemote else { fail("The helper runs on the NAS, so it needs an SSH login: set ssh under [nas].") }
+    if case .failure(let problem) = nas.check() { fail("Can't use the NAS: \(problem)") }
+    let helper = NASHelper(nas: nas)
+    let started = Date()
+    let report: HelperReport
+    do {
+        switch args.dropFirst().first {
+        case "status": report = try helper.status()
+        case "install":
+            report = try helper.ensure()
+            if report.change != nil || report.state == .failed, let run = report.runRecord(started: started) { _ = try? openStore().saveRun(run) }
+        default: fail("usage: nas-sync helper status|install [--json]")
+        }
+    } catch {
+        fail("\(error)")
+    }
+    if json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        FileHandle.standardOutput.write((try? encoder.encode(report)) ?? Data())
+        print()
+    } else {
+        let installed = report.installedVersion.map { "version \($0)" } ?? "not installed"
+        let line: String = switch report.state {
+        case .ready:
+            switch report.change {
+            case .installed?: "installed \(installed)"
+            case .updated?: "updated to \(installed)"
+            case .repaired?: "reinstalled \(installed)"
+            case nil: "\(installed), up to date"
+            }
+        case .needsInstall:
+            switch report.reason {
+            case .damaged?: "installed but won't run. Run: nas-sync helper install"
+            case .different?: "\(installed), but it doesn't match this tool's copy. Run: nas-sync helper install"
+            case .older?: "\(installed); this tool has version \(report.bundledVersion). Run: nas-sync helper install"
+            default: "\(installed). Run: nas-sync helper install"
+            }
+        case .appTooOld: "\(installed), newer than this tool's version \(report.bundledVersion). Update this tool."
+        case .failed: "\(installed). \(report.error ?? "Something went wrong.")"
+        }
+        print("NAS helper: \(line)")
+        for c in report.checks {
+            let mark = c.status == .ok ? "✓" : c.status == .failed ? "✕" : "–"
+            let expiry = c.expires.map { ", expires \($0.formatted(date: .abbreviated, time: .omitted))" } ?? ""
+            print("  \(mark) \(c.id): \(c.detail)\(expiry)")
+        }
+        if let d = Diagnosis.forHelper(report) { print("\n\(d.title). \(d.explanation) \(d.advice)") }
+    }
+    let healthy = report.state == .ready && report.failedChecks.isEmpty
+    exit(healthy || report.state == .needsInstall ? 0 : 1)
 
 case "unpack":
     guard args.count > 1 else { fail("usage: nas-sync unpack <archive.bundle.xz> [out]") }

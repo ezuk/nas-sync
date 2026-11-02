@@ -156,6 +156,8 @@ public struct StatusSnapshot: Sendable, Codable, Equatable {
     public var github: GitHubSummary?
     public var notificationsAllowed: Bool
     public var updated: Date
+    /// The helper on the NAS, once it has been checked.
+    public var helper: HelperReport?
 
     public static func initial(configPath: String) -> StatusSnapshot {
         StatusSnapshot(state: .starting, wifiName: nil, homeWiFi: nil, isHome: false, locationAllowed: false, nasConnected: false,

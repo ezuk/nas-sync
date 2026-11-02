@@ -327,6 +327,8 @@ swift run nas-sync run folders --dry-run       # show what a full check would co
 swift run nas-sync run folders --dry-run --allow-mass-delete -v   # list everything, even past the safety limits
 swift run nas-sync run github --dry-run -v     # show which repos would be backed up and why
 swift run nas-sync mirror [repo]               # where each repo's mirror is on the NAS, and the git clone command
+swift run nas-sync helper status               # the helper on the NAS and its health, changing nothing
+swift run nas-sync helper install              # install or update the helper on the NAS if needed
 ```
 
 ## Troubleshooting
@@ -351,9 +353,12 @@ swift test       # unit tests; they use throwaway folders and git repos, and the
 
 In a Debug build, `"NAS Sync.app/Contents/MacOS/NAS Sync" --render-samples <folder>` renders every screen with made-up data to PNG files without syncing anything. The screenshots in this README come from there.
 
+When `Sources/SyncCore/Helper/nas-sync-helper.py` changes, raise `HELPER_VERSION` and record the new fingerprint in `HelperTests.swift`; a test fails until you do. Raise `PROTOCOL` only when an older app can't work with the new helper. The script must keep working on Python 3.8, the version on the NAS.
+
 Code layout:
 
 - `Sources/SyncCore`: config parsing, folder sync, GitHub backups, the SSH connection, scheduling and the engine that ties them together
+- `Sources/SyncCore/Helper`: the helper script that runs on the NAS, built into the app and the tool, and the code that installs and updates it
 - `Sources/nas-sync`: the command-line tool
 - `App`: the SwiftUI menu bar app
 - `scripts/check-private.sh`: an optional pre-commit hook that blocks commits containing strings listed in a git-ignored `.private-patterns` file

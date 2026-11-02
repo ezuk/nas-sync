@@ -210,6 +210,7 @@ struct RunRow: View {
             let end = run.finished.map { " – " + $0.formatted(date: .omitted, time: .shortened) } ?? ""
             return "\(time)\(end) · Away"
         case .mount: return "\(time) · Connection"
+        case .helper: return "\(time) · NAS helper"
         case .check: return "\(time) · Full check · \(run.job)"
         case .github: return "\(time) · GitHub repos"
         default: return "\(time) · \(run.job)"
@@ -218,7 +219,7 @@ struct RunRow: View {
 
     var subtitle: String {
         var s = run.summary
-        if let d = run.duration, run.kind != .away, run.kind != .mount, d >= 1 { s += " · " + Format.duration(d) }
+        if let d = run.duration, run.kind != .away, run.kind != .mount, run.kind != .helper, d >= 1 { s += " · " + Format.duration(d) }
         if run.trigger.contains("dry run") { s += " · dry run" }
         return s
     }
@@ -246,6 +247,7 @@ struct RunDetailView: View {
         case .github: "GitHub repos → NAS"
         case .away: "Away from home"
         case .mount: "Connecting to the NAS"
+        case .helper: "NAS helper"
         case .check: "\(run.job) → NAS (full check)"
         default: "\(run.job) → NAS"
         }

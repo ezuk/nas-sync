@@ -45,6 +45,7 @@ public struct Diagnosis: Sendable, Equatable {
         case stopBackingUp
         case openFullDiskAccess
         case openSettings
+        case checkHelperAgain
 
         public var label: String {
             switch self {
@@ -57,6 +58,7 @@ public struct Diagnosis: Sendable, Equatable {
             case .stopBackingUp: "Stop Backing Up"
             case .openFullDiskAccess: "Open Privacy Settings"
             case .openSettings: "Open Settings"
+            case .checkHelperAgain: "Check Again"
             }
         }
 
@@ -111,6 +113,73 @@ public struct Diagnosis: Sendable, Equatable {
             if p.hasGitHubRemote, d.isUnrecognized { d.fixes.append(.openOnGitHub) }
             return d
         }
+    }
+
+    // MARK: NAS helper
+
+    /// Tokens this close to expiring get a warning.
+    static let tokenExpiryWarning: TimeInterval = 14 * 86400
+
+    /// What's wrong with the helper on the NAS. Nil when it's fine, or when a check couldn't tell.
+    public static func forHelper(_ report: HelperReport, now: Date = Date()) -> Diagnosis? {
+        switch report.state {
+        case .appTooOld:
+            return Diagnosis(title: "The NAS helper is newer than this app",
+                             explanation: "The NAS has helper version \(report.installedVersion ?? 0), which this app can't work with. It was left in place.",
+                             advice: "Update NAS Sync to the latest version.",
+                             fixes: [.checkHelperAgain], technical: "installed \(report.installedVersion ?? 0), app has \(report.bundledVersion)")
+        case .failed:
+            let installed = report.installedVersion != nil
+            return Diagnosis(title: installed ? "The NAS helper couldn't be updated" : "The NAS helper couldn't be installed",
+                             explanation: installed ? "The version already on the NAS is still in place." : "NAS Sync couldn't set up its helper on the NAS.",
+                             advice: report.error ?? "Try again. If it keeps happening, the details say what went wrong.",
+                             fixes: [.checkHelperAgain], technical: report.error ?? "")
+        case .needsInstall:
+            return nil
+        case .ready:
+            break
+        }
+        let failed = report.failedChecks
+        let technical = failed.map { "\($0.id): \($0.detail)" }.joined(separator: "\n")
+        if failed.contains(where: { $0.id == "python" }) {
+            return Diagnosis(title: "The NAS's Python is too old",
+                             explanation: "The helper needs Python 3.8 or newer on the NAS.",
+                             advice: "Update DSM or install a newer Python package, then check again.",
+                             fixes: [.checkHelperAgain], technical: technical)
+        }
+        if failed.contains(where: { ["git", "git-lfs", "git-transport"].contains($0.id) }) {
+            return Diagnosis(title: "Git isn't ready on the NAS",
+                             explanation: "The helper needs Git and Git LFS on the NAS to back up repos from GitHub.",
+                             advice: "Install the Git package in Package Center, then check again.",
+                             fixes: [.checkHelperAgain], technical: technical)
+        }
+        if failed.contains(where: { $0.id == "tokens" }) {
+            return Diagnosis(title: "The NAS has no GitHub token",
+                             explanation: "The helper needs a read-only GitHub token to reach your private repos.",
+                             advice: "Save a token in \(NASHelper.stateFolder)/github-token-<owner> on the NAS, then check again.",
+                             fixes: [.checkHelperAgain], technical: technical)
+        }
+        if let token = failed.first(where: { $0.tokenOwner != nil }), let owner = token.tokenOwner {
+            let explanation = switch token.detail {
+            case "saved twice": "The token file holds the same token twice in a row, so GitHub would reject it."
+            case "readable by others": "Other accounts on the NAS can read the token file."
+            case "empty": "The token file is empty."
+            default: "GitHub rejected this token. It may have expired or been deleted."
+            }
+            let advice = token.detail == "readable by others"
+                ? "Run chmod 600 on \(NASHelper.stateFolder)/github-token-\(owner) on the NAS, then check again."
+                : "Save a new read-only token in \(NASHelper.stateFolder)/github-token-\(owner) on the NAS, then check again."
+            return Diagnosis(title: "The GitHub token for \(owner) needs attention", explanation: explanation, advice: advice,
+                             fixes: [.checkHelperAgain], technical: technical)
+        }
+        if let token = report.checks.first(where: { $0.tokenOwner != nil && ($0.expires ?? .distantFuture).timeIntervalSince(now) < tokenExpiryWarning }),
+           let owner = token.tokenOwner, let expires = token.expires {
+            return Diagnosis(title: "The GitHub token for \(owner) expires soon",
+                             explanation: "It stops working on \(expires.formatted(date: .abbreviated, time: .omitted)).",
+                             advice: "Create a new read-only token and save it in \(NASHelper.stateFolder)/github-token-\(owner) on the NAS.",
+                             fixes: [.checkHelperAgain], technical: "\(token.id): expires \(expires)")
+        }
+        return nil
     }
 
     // MARK: Runs

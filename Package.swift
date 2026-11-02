@@ -11,6 +11,7 @@ let package = Package(
     targets: [
         .target(
             name: "SyncCore",
+            resources: [.embedInCode("Helper/nas-sync-helper.py")],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
                 .linkedFramework("CoreWLAN"),

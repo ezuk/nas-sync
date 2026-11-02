@@ -53,16 +53,20 @@ public struct EngineEnvironment: Sendable {
     /// Checks that the NAS answers and its base folder exists.
     public var connect: @Sendable (NAS) -> Result<Void, NAS.ConnectProblem>
     public var diagnose: @Sendable (NAS, String?, String) -> [NASCheck.Step]
+    /// Installs or updates the helper on the NAS and checks its health.
+    public var helper: @Sendable (NAS) throws -> HelperReport
 
     public init(
         wifiName: @escaping @Sendable () -> String?, power: @escaping @Sendable () -> PowerState,
         connect: @escaping @Sendable (NAS) -> Result<Void, NAS.ConnectProblem>,
-        diagnose: @escaping @Sendable (NAS, String?, String) -> [NASCheck.Step]
+        diagnose: @escaping @Sendable (NAS, String?, String) -> [NASCheck.Step],
+        helper: @escaping @Sendable (NAS) throws -> HelperReport = { try NASHelper(nas: $0).ensure() }
     ) {
         self.wifiName = wifiName
         self.power = power
         self.connect = connect
         self.diagnose = diagnose
+        self.helper = helper
     }
 
     public static let live = EngineEnvironment(
@@ -119,6 +123,13 @@ public final class Engine {
     @ObservationIgnored private var awaitingDeleteConfirmation: Set<String> = []
     @ObservationIgnored public private(set) var nas: NAS?
     @ObservationIgnored private var checkingConnection = false
+    @ObservationIgnored private var checkingHelper = false
+    @ObservationIgnored private var lastHelperCheck: Date?
+    @ObservationIgnored private var lastHelperProblem: String?
+    /// Tests use a local folder as the NAS; a real NAS is always reached over SSH.
+    @ObservationIgnored var checksHelperOnLocalFolder = false
+    /// How often the helper is checked while connected.
+    static let helperRecheck: TimeInterval = 3600
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
     @ObservationIgnored private var configFolderSource: DispatchSourceFileSystemObject?
@@ -173,7 +184,7 @@ public final class Engine {
         status = .initial(configPath: configURL.path(percentEncoded: false))
         if let until = store.date("pausedUntil"), until > Date() { status.pausedUntil = until }
         status.github = nil
-        for run in (try? store.recentRuns(limit: 200)) ?? [] where lastRuns[run.job] == nil && run.kind != .away && run.kind != .mount {
+        for run in (try? store.recentRuns(limit: 200)) ?? [] where lastRuns[run.job] == nil && run.kind != .away && run.kind != .mount && run.kind != .helper {
             lastRuns[run.job] = run
         }
         if let since = store.date("awaySince") { awaySince = since }
@@ -247,6 +258,8 @@ public final class Engine {
             nas = NAS(config: new.nas)
             status.nasConnected = false
             status.lastConnectCheck = nil
+            lastHelperCheck = nil
+            status.helper = nil
         }
         status.nasLocation = new.nas.ssh.map { "\($0):\(new.nas.path)" } ?? new.nas.path
         status.homeWiFi = new.home.wifi
@@ -508,8 +521,10 @@ public final class Engine {
         checkingConnection = false
         switch result {
         case .success:
+            if !status.nasConnected { lastHelperCheck = nil }
             status.nasConnected = true
             connectionRecovered(now: Date())
+            checkHelperIfDue(now: Date())
         case .failure(let problem):
             status.nasConnected = false
             status.connectError = problem.description
@@ -537,6 +552,44 @@ public final class Engine {
             _ = try? store.saveRun(RunRecord(kind: .mount, job: "", trigger: "connection", started: now, finished: now, outcome: .success, summary: "NAS reachable again"))
             historyVersion += 1
         }
+    }
+
+    // MARK: Helper
+
+    private func checkHelperIfDue(now: Date) {
+        if let last = lastHelperCheck, now.timeIntervalSince(last) < Self.helperRecheck { return }
+        checkHelperNow()
+    }
+
+    /// Installs or updates the helper on the NAS if needed and checks its health.
+    public func checkHelperNow() {
+        guard !checkingHelper, config?.github != nil, let nas, nas.isRemote || checksHelperOnLocalFolder else { return }
+        checkingHelper = true
+        let started = Date()
+        lastHelperCheck = started
+        let env = self.env
+        Task.detached(priority: .utility) { [weak self] in
+            let result = Result { try env.helper(nas) }
+            await MainActor.run { self?.helperChecked(result, started: started) }
+        }
+    }
+
+    private func helperChecked(_ result: Result<HelperReport, any Error>, started: Date) {
+        checkingHelper = false
+        switch result {
+        case .success(let report):
+            status.helper = report
+            let problem = report.state == .failed || report.state == .appTooOld ? report.error ?? report.state.rawValue : nil
+            if report.change != nil || (problem != nil && problem != lastHelperProblem), let run = report.runRecord(started: started) {
+                _ = try? store.saveRun(run)
+                historyVersion += 1
+            }
+            lastHelperProblem = problem
+        case .failure:
+            // The NAS went away mid-check. Keep the last report and try again on the next connection check.
+            lastHelperCheck = nil
+        }
+        publish()
     }
 
     private func startDueJobs(_ config: AppConfig, nas: NAS, power: PowerState, now: Date) {
@@ -710,6 +763,7 @@ public final class Engine {
                 waitingForMirror: repos.filter(\.isWaitingForMirror).count)
         } else {
             status.github = nil
+            status.helper = nil
         }
         status.jobs = jobs
         for j in jobs { noteHealth(j) }

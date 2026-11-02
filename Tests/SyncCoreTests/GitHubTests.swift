@@ -360,3 +360,62 @@ private final class GitSandbox {
         #expect(try Data(contentsOf: output) == data)
     }
 }
+
+
+@Suite(.serialized) struct OpenFileTests {
+    private func openFiles() -> Int { (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0 }
+
+    @Test func gitDoesNotKeepFilesOpen() throws {
+        let git = Git()
+        let before = openFiles()
+        for _ in 0..<100 { try git.run(["--version"]) }
+        #expect(openFiles() - before < 50)
+    }
+
+    @Test func gitWithInputDoesNotKeepFilesOpen() throws {
+        let git = Git()
+        let input = FileManager.default.temporaryDirectory.appending(path: "nassync-input-\(UUID().uuidString)")
+        try Data("x\n".utf8).write(to: input)
+        defer { try? FileManager.default.removeItem(at: input) }
+        let before = openFiles()
+        for _ in 0..<100 { try git.run(["hash-object", "--stdin"], input: input) }
+        #expect(openFiles() - before < 50)
+    }
+
+    @Test func commandDoesNotKeepFilesOpen() throws {
+        let before = openFiles()
+        for _ in 0..<100 { _ = try Command.run(URL(filePath: "/bin/echo"), ["hi"]) }
+        #expect(openFiles() - before < 50)
+    }
+}
+
+@Suite(.serialized) struct LostRefsTests {
+    @Test func repoThatHadRefsIsNotSkippedAsEmpty() throws {
+        let s = try GitSandbox()
+        let repo = try s.makeRepo("acme/app", remote: "git@github.com:acme/app.git")
+        let store = try Store(directory: s.root.appending(path: "store"))
+        let config = s.config()
+        #expect(s.backup(config, store: store).run(trigger: "test").repos.first?.action == .backedUp)
+
+        try s.git.run(["update-ref", "-d", "refs/heads/main"], in: repo)
+        let result = s.backup(config, store: store).run(trigger: "test")
+        let r = try #require(result.repos.first)
+        #expect(r.action == .failed)
+        #expect(r.reason.hasPrefix("While checking for changes: "))
+        #expect(r.reason.contains("reported no branches"))
+        #expect(store.repo("acme/app")?.status == .failed)
+    }
+
+    @Test func emptyRepoIsStillSkipped() throws {
+        let s = try GitSandbox()
+        let dir = s.scan.appending(path: "acme/fresh")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try s.git.run(["init", "--quiet", "-b", "main"], in: dir)
+        try s.git.run(["remote", "add", "origin", "git@github.com:acme/fresh.git"], in: dir)
+        let store = try Store(directory: s.root.appending(path: "store"))
+        let result = s.backup(s.config(), store: store).run(trigger: "test")
+        #expect(result.repos.first?.action == .skipped)
+        #expect(result.record.summary == "1 skipped")
+        #expect(result.record.outcome == .success)
+    }
+}

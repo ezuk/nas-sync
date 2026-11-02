@@ -107,6 +107,8 @@ public final class NAS: Sendable {
             return .failure(.unreachable(config.host))
         }
         if r.status == 0, r.stdout.contains("ok") { return .success(()) }
+        // Success with no output says nothing about the folder.
+        if r.status == 0 { return .failure(.unreachable(config.host)) }
         let err = r.stderr.lowercased()
         if err.contains("permission denied") { return .failure(.signIn(login)) }
         if err.contains("host key verification failed") { return .failure(.hostKey(login)) }

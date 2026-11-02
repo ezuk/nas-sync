@@ -169,7 +169,11 @@ public final class GitHubBackup: @unchecked Sendable {
                 }
             }
             let mirrorPath = assignMirrorPath(t, existing: existing, claimed: &claimed)
-            let report: @Sendable (Step) -> Void = { step in progress(Progress(index: i, total: targets.count, repo: t.fullName, step: step)) }
+            let lastStep = LockedBox(Step.checking)
+            let report: @Sendable (Step) -> Void = { step in
+                lastStep.set(step)
+                progress(Progress(index: i, total: targets.count, repo: t.fullName, step: step))
+            }
             let started = Date()
             do {
                 var result = try backUp(t, existing: existing, mirrorPath: mirrorPath, dryRun: dryRun, now: now,
@@ -181,7 +185,7 @@ public final class GitHubBackup: @unchecked Sendable {
                 record.outcome = .cancelled
                 break
             } catch {
-                let message = Self.plain(error)
+                let message = "\(Self.stepPhrase(lastStep.get())): \(Self.plain(error))"
                 results.append(RepoResult(fullName: t.fullName, action: .failed, reason: message, seconds: Date().timeIntervalSince(started)))
                 if !dryRun {
                     var r = existing ?? newRecord(t, now: now)
@@ -293,6 +297,7 @@ public final class GitHubBackup: @unchecked Sendable {
         record.message = gone ? "GitHub says this repo doesn't exist any more. It's still backed up from this Mac, and the mirror on the NAS is kept." : nil
 
         guard !refs.isEmpty else {
+            if !record.refs.isEmpty { throw BackupError.noBranchesReported(had: record.refs.count) }
             if !dryRun { try? store.saveRepo(record) }
             return RepoResult(fullName: t.fullName, action: .skipped, reason: "empty repository, nothing to back up")
         }
@@ -379,11 +384,14 @@ public final class GitHubBackup: @unchecked Sendable {
     enum BackupError: Error, CustomStringConvertible {
         case goneFromGitHub
         case checkFailed(String)
+        case noBranchesReported(had: Int)
 
         var description: String {
             switch self {
             case .goneFromGitHub: "GitHub says this repo doesn't exist any more. The mirror on the NAS is kept."
             case .checkFailed(let s): s
+            case .noBranchesReported(let had):
+                "git reported no branches, but this repo had \(Format.count(had, "ref")) at the last backup. The mirror on the NAS wasn't changed."
             }
         }
     }
@@ -397,7 +405,18 @@ public final class GitHubBackup: @unchecked Sendable {
         if text.contains("Could not resolve host") {
             return "Couldn't reach GitHub. Check the internet connection."
         }
-        return text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+        return lines.first { $0.hasPrefix("fatal:") || $0.hasPrefix("error:") } ?? lines.first ?? text
+    }
+
+    /// Where in a repo's backup an error happened.
+    static func stepPhrase(_ step: Step) -> String {
+        switch step {
+        case .checking: "While checking for changes"
+        case .fetching: "While updating the mirror"
+        case .verifying: "While verifying the mirror"
+        case .copying: "While copying to the NAS"
+        }
     }
 
     // MARK: Refs
@@ -695,6 +714,7 @@ public final class GitHubBackup: @unchecked Sendable {
         var summary: [String] = []
         if c.copied > 0 { summary.append("\(c.copied) \(dryRun ? "would be backed up" : "backed up")") }
         if c.unchanged > 0 { summary.append("\(c.unchanged) unchanged") }
+        if c.skipped > 0 { summary.append("\(c.skipped) skipped") }
         if c.failed > 0 { summary.append("\(c.failed) failed") }
         if c.keptRefs > 0 { summary.append(Format.count(c.keptRefs, "deleted ref") + " kept") }
         if c.pruned > 0 { summary.append(Format.count(c.pruned, "deleted ref") + " pruned") }

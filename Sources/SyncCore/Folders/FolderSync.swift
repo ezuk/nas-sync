@@ -56,6 +56,8 @@ public struct FolderSync: Sendable {
         public var sourceFileCount = 0
         /// Notes from rsync, such as skipped symbolic links.
         public var notes: [String] = []
+        /// Files rsync reports it can't copy, found while comparing.
+        public var warnings: [String] = []
         public var isFull: Bool { true }
 
         public var copyCount: Int { newFiles + changedFiles }
@@ -84,6 +86,12 @@ public struct FolderSync: Sendable {
         public var fatalError: String?
         /// Problems with single files (rsync exit 23 or 24).
         public var warnings: [String] = []
+
+        mutating func addWarnings(_ found: [String], status: Int32) {
+            warnings = found.isEmpty ? ["rsync couldn't copy some files (exit \(status))."] : found
+            counts.failed = warnings.count
+            items.insert(contentsOf: warnings.map { RunItem(action: .failed, path: $0) }, at: 0)
+        }
     }
 
     func checkSource() throws {
@@ -104,6 +112,7 @@ public struct FolderSync: Sendable {
         let r = try rsync(dryRun: true, archiveDay: nil, isCancelled: isCancelled) { line in lines.update { $0.append(line) } }
         if r.status != 0, r.status != 23, r.status != 24 { throw SyncError(description: Self.explain(r)) }
         var plan = Plan()
+        if r.status == 23 || r.status == 24 { plan.warnings = Self.fileErrors(r.stderr) }
         for line in lines.get() {
             if let n = Self.statsCount(line) { plan.sourceFileCount = n; continue }
             guard let item = Self.parse(line) else {
@@ -172,9 +181,7 @@ public struct FolderSync: Sendable {
             case 0:
                 break
             case 23, 24:
-                out.warnings = Self.fileErrors(r.stderr)
-                if out.warnings.isEmpty { out.warnings = ["rsync couldn't copy some files (exit \(r.status))."] }
-                out.counts.failed = out.warnings.count
+                out.addWarnings(Self.fileErrors(r.stderr), status: r.status)
             default:
                 out.fatalError = Self.explain(r)
             }
@@ -269,8 +276,9 @@ public struct FolderSync: Sendable {
     static func fileErrors(_ stderr: String) -> [String] {
         stderr.split(separator: "\n").map(String.init).compactMap { line -> String? in
             if line.hasPrefix("file has vanished: ") { return "Changed while copying, will retry: " + line.dropFirst("file has vanished: ".count) }
-            if line.hasPrefix("rsync: "), !line.contains("some files") { return String(line.dropFirst("rsync: ".count)) }
-            return nil
+            if line.hasPrefix("rsync error:") || line.hasPrefix("rsync warning:") || line.hasPrefix("** ") { return nil }
+            if line.hasPrefix("rsync: ") { return String(line.dropFirst("rsync: ".count)) }
+            return line.isEmpty ? nil : line
         }.prefix(20).map { $0 }
     }
 

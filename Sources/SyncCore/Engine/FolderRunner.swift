@@ -63,6 +63,7 @@ public enum FolderRunner {
         if plan.isEmpty {
             out.counts.total = plan.sourceFileCount
             out.counts.unchanged = plan.sourceFileCount
+            if !plan.warnings.isEmpty { out.addWarnings(plan.warnings, status: 23) }
         } else {
             out = sync.execute(plan, now: now, isCancelled: isCancelled, progress: progress)
         }

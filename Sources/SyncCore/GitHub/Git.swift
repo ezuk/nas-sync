@@ -40,46 +40,58 @@ public struct Git: Sendable {
 
     public func runRaw(_ args: [String], in directory: URL? = nil, timeout: TimeInterval? = nil, input: URL? = nil,
                        isCancelled: @Sendable () -> Bool = { false }) throws -> Result {
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = (directory.map { ["-C", $0.path(percentEncoded: false)] } ?? []) + args
-        var env = ProcessInfo.processInfo.environment
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=20"
-        env["LC_ALL"] = "C"
-        process.environment = env
-        process.qualityOfService = .utility
+        // Foundation keeps pipes open until the enclosing pool drains, and a backup run's thread never drains on its own.
+        try autoreleasepool {
+            let process = Process()
+            process.executableURL = executable
+            process.arguments = (directory.map { ["-C", $0.path(percentEncoded: false)] } ?? []) + args
+            var env = ProcessInfo.processInfo.environment
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=20"
+            env["LC_ALL"] = "C"
+            process.environment = env
+            process.qualityOfService = .utility
 
-        let outPipe = Pipe(), errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        process.standardInput = try input.map { try FileHandle(forReadingFrom: $0) } ?? FileHandle.nullDevice
+            let outPipe = Pipe(), errPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = errPipe
+            process.standardInput = try input.map { try FileHandle(forReadingFrom: $0) } ?? FileHandle.nullDevice
 
-        let outData = LockedData(), errData = LockedData()
-        outPipe.fileHandleForReading.readabilityHandler = { h in outData.append(h.availableData) }
-        errPipe.fileHandleForReading.readabilityHandler = { h in errData.append(h.availableData) }
+            let outData = LockedData(), errData = LockedData()
+            outPipe.fileHandleForReading.readabilityHandler = { h in outData.append(h.availableData) }
+            errPipe.fileHandleForReading.readabilityHandler = { h in errData.append(h.availableData) }
 
-        try process.run()
-        let deadline = Date().addingTimeInterval(timeout ?? self.timeout)
-        while process.isRunning {
-            if isCancelled() {
-                process.terminate()
-                process.waitUntilExit()
-                throw CancellationError()
+            let name = args.first ?? ""
+            do {
+                try process.run()
+            } catch {
+                throw GitError(command: name, status: -1, output: "Couldn't start git \(name): \(error.localizedDescription)")
             }
-            if Date() > deadline {
-                process.terminate()
-                process.waitUntilExit()
-                throw GitError(command: args.first ?? "", status: -1, output: "git \(args.first ?? "") timed out")
+            let deadline = Date().addingTimeInterval(timeout ?? self.timeout)
+            while process.isRunning {
+                if isCancelled() {
+                    process.terminate()
+                    process.waitUntilExit()
+                    outPipe.fileHandleForReading.readabilityHandler = nil
+                    errPipe.fileHandleForReading.readabilityHandler = nil
+                    throw CancellationError()
+                }
+                if Date() > deadline {
+                    process.terminate()
+                    process.waitUntilExit()
+                    outPipe.fileHandleForReading.readabilityHandler = nil
+                    errPipe.fileHandleForReading.readabilityHandler = nil
+                    throw GitError(command: name, status: -1, output: "git \(name) timed out")
+                }
+                Thread.sleep(forTimeInterval: 0.05)
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            process.waitUntilExit()
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            outData.append(outPipe.fileHandleForReading.readDataToEndOfFile())
+            errData.append(errPipe.fileHandleForReading.readDataToEndOfFile())
+            return Result(status: process.terminationStatus, stdout: outData.string, stderr: errData.string)
         }
-        process.waitUntilExit()
-        outPipe.fileHandleForReading.readabilityHandler = nil
-        errPipe.fileHandleForReading.readabilityHandler = nil
-        outData.append(outPipe.fileHandleForReading.readDataToEndOfFile())
-        errData.append(errPipe.fileHandleForReading.readDataToEndOfFile())
-        return Result(status: process.terminationStatus, stdout: outData.string, stderr: errData.string)
     }
 }
 

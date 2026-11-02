@@ -25,47 +25,55 @@ public enum Command {
         _ executable: URL, _ args: [String], input: URL? = nil, timeout: TimeInterval = 3600,
         isCancelled: @Sendable () -> Bool = { false }, onLine: (@Sendable (String) -> Void)? = nil
     ) throws -> Result {
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = args
-        var env = ProcessInfo.processInfo.environment
-        env["LC_ALL"] = "en_US.UTF-8"
-        process.environment = env
-        process.qualityOfService = .utility
+        // Foundation keeps pipes open until the enclosing pool drains, and a backup run's thread never drains on its own.
+        try autoreleasepool {
+            let process = Process()
+            process.executableURL = executable
+            process.arguments = args
+            var env = ProcessInfo.processInfo.environment
+            env["LC_ALL"] = "en_US.UTF-8"
+            process.environment = env
+            process.qualityOfService = .utility
 
-        let outPipe = Pipe(), errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        process.standardInput = try input.map { try FileHandle(forReadingFrom: $0) } ?? FileHandle.nullDevice
+            let outPipe = Pipe(), errPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = errPipe
+            process.standardInput = try input.map { try FileHandle(forReadingFrom: $0) } ?? FileHandle.nullDevice
 
-        let outData = LockedData(), errData = LockedData()
-        let lines = onLine.map { LineSplitter(onLine: $0) }
-        outPipe.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData
-            if let lines { lines.feed(d) } else { outData.append(d) }
-        }
-        errPipe.fileHandleForReading.readabilityHandler = { h in errData.append(h.availableData) }
-
-        try process.run()
-        let deadline = Date().addingTimeInterval(timeout)
-        var failure: Error?
-        while process.isRunning {
-            if isCancelled() { failure = CancellationError(); break }
-            if Date() > deadline {
-                failure = CommandError(tool: executable.lastPathComponent, status: -1, output: "\(executable.lastPathComponent) timed out")
-                break
+            let outData = LockedData(), errData = LockedData()
+            let lines = onLine.map { LineSplitter(onLine: $0) }
+            outPipe.fileHandleForReading.readabilityHandler = { h in
+                let d = h.availableData
+                if let lines { lines.feed(d) } else { outData.append(d) }
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            errPipe.fileHandleForReading.readabilityHandler = { h in errData.append(h.availableData) }
+
+            do {
+                try process.run()
+            } catch {
+                let name = executable.lastPathComponent
+                throw CommandError(tool: name, status: -1, output: "Couldn't start \(name): \(error.localizedDescription)")
+            }
+            let deadline = Date().addingTimeInterval(timeout)
+            var failure: Error?
+            while process.isRunning {
+                if isCancelled() { failure = CancellationError(); break }
+                if Date() > deadline {
+                    failure = CommandError(tool: executable.lastPathComponent, status: -1, output: "\(executable.lastPathComponent) timed out")
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if failure != nil, process.isRunning { process.terminate() }
+            process.waitUntilExit()
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
+            if let lines { lines.feed(rest); lines.finish() } else { outData.append(rest) }
+            errData.append(errPipe.fileHandleForReading.readDataToEndOfFile())
+            if let failure { throw failure }
+            return Result(status: process.terminationStatus, stdout: outData.string, stderr: errData.string)
         }
-        if failure != nil, process.isRunning { process.terminate() }
-        process.waitUntilExit()
-        outPipe.fileHandleForReading.readabilityHandler = nil
-        errPipe.fileHandleForReading.readabilityHandler = nil
-        let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
-        if let lines { lines.feed(rest); lines.finish() } else { outData.append(rest) }
-        errData.append(errPipe.fileHandleForReading.readDataToEndOfFile())
-        if let failure { throw failure }
-        return Result(status: process.terminationStatus, stdout: outData.string, stderr: errData.string)
     }
 }
 

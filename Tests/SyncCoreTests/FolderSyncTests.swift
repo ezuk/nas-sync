@@ -94,6 +94,15 @@ final class TempPair {
         ])
     }
 
+    @Test func keepsErrorsWithoutTheRsyncPrefix() {
+        let stderr = """
+        ** WARNING: connection is not using a post-quantum key exchange algorithm.
+        [sender] cannot convert filename: docs/📊 tracker.json (Illegal byte sequence)
+        rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1347)
+        """
+        #expect(FolderSync.fileErrors(stderr) == ["[sender] cannot convert filename: docs/📊 tracker.json (Illegal byte sequence)"])
+    }
+
     @Test func archiveFolderHasDayAndTime() {
         let date = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 29, hour: 15, minute: 30, second: 12))!
         #expect(FolderSync.archivePath(date) == "_archive/2026-10-29/153012")

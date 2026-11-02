@@ -80,6 +80,113 @@ struct Tag: View {
     }
 }
 
+/// What went wrong and what to do about it, with buttons that do it.
+struct ProblemCard: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    /// The repo or folder it's about.
+    var subject: String?
+    var diagnosis: Diagnosis
+    var repo: RepoProblem?
+    /// Folder job the problem belongs to, for showing its files.
+    var folderJob: String?
+    /// For the menu: no technical details, and fixes that change the backup are left to the Repos window.
+    var compact = false
+    @State private var confirming: Diagnosis.Fix?
+    @State private var failure: String?
+    @State private var copied = false
+
+    private var fixes: [Diagnosis.Fix] {
+        compact ? diagnosis.fixes.filter { !$0.needsConfirmation } : diagnosis.fixes
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if let subject {
+                Text(subject).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            }
+            Text(diagnosis.title).font(.system(size: 12.5, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+            Text(diagnosis.explanation).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            Text(diagnosis.advice).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            FlowLayout(spacing: 6) {
+                ForEach(fixes, id: \.self) { fix in
+                    Button(fix.label) {
+                        if fix.needsConfirmation { confirming = fix } else { run(fix) }
+                    }
+                    .disabled(!model.canRun(fix))
+                }
+                if compact {
+                    if repo != nil {
+                        Button("Details") {
+                            model.requestRepoProblems()
+                            openWindow(id: WindowID.repos)
+                            NSApp.activate()
+                        }
+                    } else {
+                        Button("Details") {
+                            openWindow(id: WindowID.activity)
+                            NSApp.activate()
+                        }
+                    }
+                } else if !diagnosis.technical.isEmpty {
+                    Button(copied ? "Copied" : "Copy Details", action: copyDetails)
+                }
+            }
+            .controlSize(.small)
+            .padding(.top, 3)
+            if let failure {
+                Text(failure).font(.system(size: 11.5)).foregroundStyle(Palette.errorText).fixedSize(horizontal: false, vertical: true)
+            }
+            if !compact, !diagnosis.technical.isEmpty {
+                DisclosureGroup("Technical details") {
+                    Text(diagnosis.technical)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 3)
+                }
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(tint.opacity(0.22)))
+        .confirmationDialog(confirming.map(confirmationTitle) ?? "", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
+            if let confirming { Button(confirming.label, role: .destructive) { run(confirming) } }
+        } message: {
+            Text("The backup already on the NAS is kept.")
+        }
+    }
+
+    private var tint: Color { diagnosis.isTransient ? Palette.orange : Palette.red }
+
+    private func confirmationTitle(_ fix: Diagnosis.Fix) -> String {
+        let name = repo?.fullName ?? "this repo"
+        return fix == .forgetRepo ? "Forget \(name)?" : "Stop backing up \(name)?"
+    }
+
+    private func run(_ fix: Diagnosis.Fix) {
+        do {
+            try model.perform(fix, repo: repo, folderJob: folderJob)
+            failure = nil
+        } catch {
+            failure = error.localizedDescription
+        }
+    }
+
+    private func copyDetails() {
+        let parts = [subject, diagnosis.title, diagnosis.technical].compactMap { $0 }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(parts.joined(separator: "\n"), forType: .string)
+        copied = true
+    }
+}
+
 struct ProgressStrip: View {
     var fraction: Double
 

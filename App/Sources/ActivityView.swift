@@ -269,7 +269,19 @@ struct RunDetailView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(title).font(.system(size: 17, weight: .semibold))
                 Text(meta).font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 4).padding(.bottom, 16)
-                if let message = run.message {
+                let problems = Diagnosis.forRun(run)
+                if !problems.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(problems.prefix(5).enumerated()), id: \.offset) { _, problem in
+                            ProblemCard(subject: problem.subject, diagnosis: fixes(problem.diagnosis), repo: repoProblem(problem.subject),
+                                        folderJob: run.kind == .github ? nil : run.job)
+                        }
+                        if problems.count > 5 {
+                            Text("and \(Format.count(problems.count - 5, "more problem")) listed below.").font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.bottom, 16)
+                } else if let message = run.message {
                     Text(message)
                         .font(.system(size: 12))
                         .textSelection(.enabled)
@@ -282,6 +294,19 @@ struct RunDetailView: View {
             }
             .padding(EdgeInsets(top: 20, leading: 24, bottom: 20, trailing: 24))
         }
+    }
+
+    /// History can outlive what it describes: a fix for the current repo only applies to the latest run.
+    private func fixes(_ d: Diagnosis) -> Diagnosis {
+        guard run.id != model.engine.lastRun(job: run.job)?.id else { return d }
+        var old = d
+        old.fixes = d.fixes.filter { if case .revealFile = $0 { true } else { $0 == .revealClone || $0 == .openOnGitHub } }
+        return old
+    }
+
+    private func repoProblem(_ name: String?) -> RepoProblem? {
+        guard run.kind == .github, let name, let r = model.engine.store.repo(name) else { return nil }
+        return RepoProblem(fullName: r.fullName, source: r.source, localPath: r.localPath, status: r.status, message: r.message, hasGitHubRemote: r.hasGitHubRemote)
     }
 
     // MARK: Folder runs

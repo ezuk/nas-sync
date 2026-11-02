@@ -84,6 +84,9 @@ public struct JobStatus: Sendable, Codable, Equatable, Identifiable {
     }
 
     public var id: String { name }
+
+    /// "Tresorit needs attention", "GitHub repos need attention".
+    public var attentionTitle: String { "\(name) \(kind == .github ? "need" : "needs") attention" }
 }
 
 public struct GitHubSummary: Sendable, Codable, Equatable {
@@ -95,8 +98,13 @@ public struct GitHubSummary: Sendable, Codable, Equatable {
     public var every: TimeInterval
     /// Repos found since the last time the user dismissed the note.
     public var newRepos: [String]
+    /// Failed, missing or gone repos, failures first.
+    public var problemRepos: [RepoProblem]
+    /// Repos with history that have no mirror on the NAS yet.
+    public var waitingForMirror: Int
 
-    public init(repoCount: Int, localClones: Int, remoteOnly: Int, problems: Int, excluded: Int, every: TimeInterval, newRepos: [String]) {
+    public init(repoCount: Int, localClones: Int, remoteOnly: Int, problems: Int, excluded: Int, every: TimeInterval, newRepos: [String],
+                problemRepos: [RepoProblem] = [], waitingForMirror: Int = 0) {
         self.repoCount = repoCount
         self.localClones = localClones
         self.remoteOnly = remoteOnly
@@ -104,6 +112,22 @@ public struct GitHubSummary: Sendable, Codable, Equatable {
         self.excluded = excluded
         self.every = every
         self.newRepos = newRepos
+        self.problemRepos = problemRepos
+        self.waitingForMirror = waitingForMirror
+    }
+
+    /// Fields missing from a status file written by an older version read as empty.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        repoCount = try c.decode(Int.self, forKey: .repoCount)
+        localClones = try c.decode(Int.self, forKey: .localClones)
+        remoteOnly = try c.decode(Int.self, forKey: .remoteOnly)
+        problems = try c.decode(Int.self, forKey: .problems)
+        excluded = try c.decode(Int.self, forKey: .excluded)
+        every = try c.decode(TimeInterval.self, forKey: .every)
+        newRepos = try c.decode([String].self, forKey: .newRepos)
+        problemRepos = try c.decodeIfPresent([RepoProblem].self, forKey: .problemRepos) ?? []
+        waitingForMirror = try c.decodeIfPresent(Int.self, forKey: .waitingForMirror) ?? 0
     }
 }
 
@@ -264,7 +288,7 @@ public enum StatusText {
             }
             let bad = s.jobs.filter { $0.state == .error }
             if let first = bad.first {
-                let title = bad.count == 1 ? "\(first.name) needs attention" : "\(bad.count) backups need attention"
+                let title = bad.count == 1 ? first.attentionTitle : "\(bad.count) backups need attention"
                 return Headline(title: title, detail: first.message ?? first.lastSummary ?? "")
             }
             return Headline(title: "Something needs attention", detail: s.configIssues.first ?? "")
@@ -277,6 +301,9 @@ public enum StatusText {
             return Headline(title: title, detail: "You're home, but \(names) hasn't completed a backup. Open Activity for details.")
         case .upToDate:
             let lastFolder = folders.compactMap(\.lastSuccess).max()
+            if let job = folders.first(where: { $0.lastOutcome == .warning }) {
+                return Headline(title: "Backed up, with a problem", detail: "\(job.name): \(job.lastSummary ?? "needs a look")")
+            }
             if let gh, !folders.isEmpty {
                 let ghText = gh.lastSuccess.map { "GitHub repos \(relativeDay($0, now: now))" } ?? "GitHub repos not backed up yet"
                 return Headline(title: "Everything is backed up", detail: "Folders \(relative(lastFolder, now: now)). \(ghText).")

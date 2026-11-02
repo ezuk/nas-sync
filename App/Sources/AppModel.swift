@@ -18,6 +18,8 @@ final class AppModel {
         didSet { UserDefaults.standard.set(editorBundleID, forKey: "editorBundleID") }
     }
     private var started = false
+    /// Asks the Repos window to show its problems. Bumped each time.
+    private(set) var repoProblemsRequest = 0
 
     static var configURL: URL {
         if let path = UserDefaults.standard.string(forKey: "configPath") { return URL(filePath: path) }
@@ -115,6 +117,51 @@ final class AppModel {
         let wifi = WiFi.currentName() ?? "Your Wi-Fi name"
         try? StarterConfig.text(wifi: wifi).write(to: url, atomically: true, encoding: .utf8)
         engine.reloadConfig()
+    }
+
+    // MARK: Fixing problems
+
+    func requestRepoProblems() { repoProblemsRequest += 1 }
+
+    /// False for fixes that can't work right now, like backing up while away from home.
+    func canRun(_ fix: Diagnosis.Fix) -> Bool {
+        let s = engine.status
+        switch fix {
+        case .backUpAgain:
+            return s.isHome && s.nasConnected && s.pausedUntil == nil && s.githubJob?.state != .running
+        case .syncAgain:
+            return s.isHome && s.nasConnected && s.pausedUntil == nil && !s.folderJobs.contains { $0.state == .running }
+        default:
+            return true
+        }
+    }
+
+    func perform(_ fix: Diagnosis.Fix, repo: RepoProblem?, folderJob: String?) throws {
+        switch fix {
+        case .backUpAgain:
+            engine.backUpReposNow()
+        case .syncAgain:
+            engine.syncFoldersNow()
+        case .revealClone:
+            if let path = repo?.localPath { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) }
+        case .revealFile(let path):
+            if let source = engine.config?.folders.first(where: { $0.name == folderJob })?.source {
+                NSWorkspace.shared.activateFileViewerSelecting([source.appending(path: path)])
+            }
+        case .openOnGitHub:
+            if let url = repo?.githubURL { NSWorkspace.shared.open(url) }
+        case .copyCommand(let command):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(command, forType: .string)
+        case .forgetRepo:
+            if let repo { try engine.forgetRepo(repo.fullName) }
+        case .stopBackingUp:
+            if let repo { try engine.stopBackingUp(repo.fullName) }
+        case .openFullDiskAccess:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") { NSWorkspace.shared.open(url) }
+        case .openSettings:
+            WindowOpener.open(WindowID.settings)
+        }
     }
 
     /// Copies the full path of a folder on the NAS.

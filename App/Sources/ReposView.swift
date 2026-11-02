@@ -9,6 +9,7 @@ struct ReposView: View {
     @State private var search = ""
     @State private var showAdd = false
     @State private var sortOrder = [KeyPathComparator(\RepoRecord.fullName)]
+    @State private var selection: RepoRecord.ID?
 
     enum Filter: Hashable { case all, local, remote, problems, excluded }
 
@@ -32,6 +33,13 @@ struct ReposView: View {
             .padding(.vertical, 10)
             Divider()
             table
+            if let problem = selectedProblem {
+                Divider()
+                ProblemCard(subject: problem.fullName, diagnosis: Diagnosis.forRepo(problem), repo: problem)
+                    .id(problem.fullName)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+            }
             Text("Each repo is one git mirror on the NAS. Branches and tags deleted or force-pushed at the source stay in it under refs/deleted.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -39,19 +47,34 @@ struct ReposView: View {
         }
         .searchable(text: $search, placement: .toolbar, prompt: "Search \(repos.count) repos")
         .navigationTitle("Repos")
-        .onAppear(perform: load)
+        .onAppear {
+            load()
+            if model.repoProblemsRequest > 0 { showProblems() }
+        }
         .onChange(of: model.engine.historyVersion) { load() }
+        .onChange(of: model.repoProblemsRequest) { showProblems() }
+        .onChange(of: filter) { if filter == .problems, selectedProblem == nil { selection = visible.first?.id } }
         .sheet(isPresented: $showAdd) { AddRepoSheet() }
     }
 
     private func load() { repos = model.engine.store.repos() }
+
+    private var selectedProblem: RepoProblem? {
+        selection.flatMap { id in repos.first { $0.id == id } }?.problem
+    }
+
+    /// Switches to the Problems filter with the worst repo selected.
+    private func showProblems() {
+        filter = .problems
+        selection = (visible.first { $0.status == .failed } ?? visible.first)?.id
+    }
 
     private func matches(_ r: RepoRecord, _ f: Filter) -> Bool {
         switch f {
         case .all: r.status != .excluded
         case .local: r.source == .localClone && r.status != .excluded
         case .remote: r.source == .remoteOnly && r.status != .excluded
-        case .problems: [.failed, .missingLocally, .goneFromGitHub].contains(r.status)
+        case .problems: r.problem != nil
         case .excluded: r.status == .excluded
         }
     }
@@ -64,7 +87,7 @@ struct ReposView: View {
     }
 
     private var table: some View {
-        Table(visible, sortOrder: $sortOrder) {
+        Table(visible, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("") { r in StatusDot(color: color(r)) }.width(14)
             TableColumn("Repo", value: \.fullName) { r in
                 Text(r.fullName).font(.system(size: 11.5, design: .monospaced)).help(r.localPath ?? "")
@@ -80,7 +103,8 @@ struct ReposView: View {
                     case .goneFromGitHub: Tag(text: "Gone from GitHub", style: .bad)
                     case .missingLocally: Tag(text: r.source == .localClone ? "Clone missing" : "Removed from config", style: .bad)
                     case .failed: Tag(text: "Failed", style: .bad)
-                    default: EmptyView()
+                    default:
+                        if r.isWaitingForMirror { Tag(text: "Not on NAS yet", style: .archived) }
                     }
                     if Date().timeIntervalSince(r.firstSeen) < 3 * 86400, r.status == .ok { Tag(text: "New", style: .new) }
                 }

@@ -32,6 +32,7 @@ struct PopoverView: View {
             if let repos = status.github?.newRepos, !repos.isEmpty {
                 newReposNote(repos)
             }
+            problems
             if !status.folderJobs.isEmpty { folderSection(now: now) }
             if let gh = status.githubJob { githubSection(gh, now: now) }
             Divider()
@@ -256,6 +257,59 @@ struct PopoverView: View {
         }
     }
 
+    // MARK: Problems
+
+    /// Explains what's wrong and offers the fix. Connection problems have their own checklist above.
+    @ViewBuilder
+    private var problems: some View {
+        if status.connectError == nil {
+            let folders = status.folderJobs.filter { $0.state != .running }.compactMap { job -> (String, Diagnosis)? in
+                guard let run = model.engine.lastRun(job: job.name), let d = Diagnosis.forFolderRun(run), !d.isTransient else { return nil }
+                return (job.name, d)
+            }
+            let running = status.githubJob?.state == .running
+            let all = running ? [] : status.github?.problemRepos ?? []
+            let failed = all.filter { $0.status == .failed }
+            let waiting = running ? 0 : status.github?.waitingForMirror ?? 0
+            let others = all.count - min(failed.count, 2)
+            if !folders.isEmpty || !failed.isEmpty || waiting > 0 {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(folders, id: \.0) { name, d in
+                        ProblemCard(subject: name, diagnosis: d, folderJob: name, compact: true)
+                    }
+                    ForEach(failed.prefix(2)) { repo in
+                        ProblemCard(subject: repo.fullName, diagnosis: Diagnosis.forRepo(repo), repo: repo, compact: true)
+                    }
+                    if waiting > 0 || (others > 0 && !failed.isEmpty) {
+                        moreRepoProblems(others: others, waiting: waiting, offerBackUp: failed.isEmpty)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+            }
+        }
+    }
+
+    private func moreRepoProblems(others: Int, waiting: Int, offerBackUp: Bool) -> some View {
+        let parts = [others > 0 ? "\(Format.count(others, "more repo")) with a problem" : nil,
+                     waiting > 0 ? "\(Format.count(waiting, "repo")) not on the NAS yet" : nil].compactMap { $0 }
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(parts.joined(separator: " · ")).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                if offerBackUp {
+                    Button("Back Up Now") { model.engine.backUpReposNow() }.buttonStyle(.link).disabled(!model.canRun(.backUpAgain))
+                }
+                Button("Show in Repos") {
+                    model.requestRepoProblems()
+                    openAndActivate(openWindow, id: WindowID.repos)
+                }
+                .buttonStyle(.link)
+            }
+            .font(.system(size: 12))
+        }
+        .padding(.horizontal, 2)
+    }
+
     // MARK: Job sections
 
     private func sectionHeader(_ left: String) -> some View {
@@ -291,6 +345,7 @@ struct PopoverView: View {
         var line = StatusText.jobLine(job, now: now)
         if job.state == .idle, let last, last.outcome != .failed {
             line = "\(last.counts.copied) backed up · \(last.counts.unchanged) unchanged"
+            if last.counts.skipped > 0 { line += " · \(last.counts.skipped) skipped" }
             if let next = job.nextRun { line += " · next at \(next.formatted(date: .omitted, time: .shortened))" }
         }
         return VStack(alignment: .leading, spacing: 0) {

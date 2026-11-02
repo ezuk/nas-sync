@@ -198,6 +198,47 @@ enum SampleData {
         engine.showSample(s)
         render(PopoverView(), "2c-popover-battery", width: 340)
 
+        // A repo that failed, and repos not on the NAS yet.
+        let failedRepo = RepoProblem(fullName: "acme/firmware", source: .localClone, localPath: "/tmp/acme/firmware", status: .failed,
+                                     message: "While copying to the NAS: Couldn't start rsync: Bad file descriptor", hasGitHubRemote: true)
+        let goneRepo = RepoProblem(fullName: "acme/old-prototype", source: .remoteOnly, localPath: nil, status: .goneFromGitHub,
+                                   message: "GitHub says this repo doesn't exist any more.", hasGitHubRemote: true)
+        var failedRun = ghRun()
+        failedRun.outcome = .warning
+        failedRun.counts.failed = 1
+        failedRun.counts.skipped = 107
+        failedRun.summary = "61 backed up, 107 skipped, 1 failed"
+        failedRun.items.insert(RunItem(action: .failed, path: failedRepo.fullName, detail: failedRepo.message), at: 0)
+        s = base(.error)
+        s.github?.problems = 2
+        s.github?.problemRepos = [failedRepo, goneRepo]
+        s.github?.waitingForMirror = 107
+        s.jobs = [job("Tresorit", .idle, last: ago(4), summary: "12 copied · 2 archived", files: 48_210),
+                  job(StoreKey.githubJob, .error, last: ago(120), summary: failedRun.summary, kind: .github, message: failedRun.summary)]
+        engine.showSample(s, lastGitHubRun: failedRun)
+        render(PopoverView(), "2f-popover-repo-problem", width: 340)
+        render(RunDetailView(run: failedRun).frame(width: 720), "2g-github-run-problem", width: 720, height: 640)
+        var failedRecord = RepoRecord(fullName: failedRepo.fullName, source: .localClone, localPath: failedRepo.localPath, firstSeen: ago(90 * 1440))
+        failedRecord.status = .failed
+        failedRecord.message = failedRepo.message
+        failedRecord.refs = ["refs/heads/main": "abc"]
+        try? engine.store.saveRepo(failedRecord)
+        var waitingRecord = RepoRecord(fullName: "acme/qmk", source: .localClone, localPath: "/tmp/acme/qmk", firstSeen: ago(90 * 1440))
+        waitingRecord.refs = ["refs/heads/main": "abc"]
+        try? engine.store.saveRepo(waitingRecord)
+        model.requestRepoProblems()
+        render(ReposView(), "2h-repos-problems", width: 1040, height: 520)
+
+        // Files that can't be copied because of their names.
+        var fileRun = RunRecord(kind: .folder, job: "Tresorit", trigger: "changes", started: ago(30), finished: ago(29), outcome: .warning,
+                                summary: "12 files copied (38 MB), 3 failed",
+                                message: "[sender] cannot convert filename: Work/📊 Project tracker.json (Illegal byte sequence)\n[sender] cannot convert filename: Work/📊 Project tracker.csv (Illegal byte sequence)\n[sender] cannot convert filename: Work/🗓️ Timeline.json (Illegal byte sequence)",
+                                items: [RunItem(action: .failed, path: "[sender] cannot convert filename: Work/📊 Project tracker.json (Illegal byte sequence)")])
+        fileRun.counts.failed = 3
+        fileRun.counts.changed = 12
+        fileRun.counts.bytes = 38_000_000
+        render(RunDetailView(run: fileRun).frame(width: 720), "2i-folder-run-problem", width: 720, height: 560)
+
         // Windows.
         s = base(.upToDate)
         s.jobs = [job("Tresorit", .idle, last: ago(4), summary: "12 copied")]

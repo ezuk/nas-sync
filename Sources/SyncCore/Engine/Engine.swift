@@ -135,6 +135,27 @@ public final class Engine {
 
     public var lastGitHubRun: RunRecord? { lastRuns[Self.githubJob] }
 
+    public func lastRun(job: String) -> RunRecord? { lastRuns[job] }
+
+    /// Removes a repo from the app's records. Its mirror stays on the NAS.
+    public func forgetRepo(_ name: String) throws {
+        try store.deleteRepo(name)
+        historyVersion += 1
+        evaluate()
+    }
+
+    /// Adds a repo to `github.exclude`. Its mirror stays on the NAS.
+    public func stopBackingUp(_ name: String) throws {
+        try skipNewRepos([name])
+        if var r = store.repo(name) {
+            r.status = .excluded
+            r.message = "Excluded in the config."
+            try store.saveRepo(r)
+        }
+        historyVersion += 1
+        evaluate()
+    }
+
     /// Shows a fixed status without starting anything. Used to render screenshots.
     public func showSample(_ snapshot: StatusSnapshot, lastGitHubRun: RunRecord? = nil) {
         status = snapshot
@@ -634,8 +655,10 @@ public final class Engine {
             lastRuns[job] = record
             historyVersion += 1
             if record.kind == .github, record.counts.failed > 0 {
+                let problems = Diagnosis.forRun(record)
+                let first = problems.first.map { "\($0.subject.map { $0 + ": " } ?? "")\($0.diagnosis.title)." } ?? "Open Activity for details."
                 notify("github-run-\(record.started.timeIntervalSince1970)", "\(Format.count(record.counts.failed, "repo")) failed to back up",
-                       record.message ?? "Open Activity for details.")
+                       problems.count > 1 ? "\(first) And \(problems.count - 1) more." : first)
             }
         }
         if let requeue, record?.outcome != .blocked, record?.outcome != .cancelled {
@@ -682,7 +705,9 @@ public final class Engine {
                 remoteOnly: repos.filter { $0.source == .remoteOnly && $0.status != .excluded }.count,
                 problems: repos.filter { [.failed, .missingLocally, .goneFromGitHub].contains($0.status) }.count,
                 excluded: repos.filter { $0.status == .excluded }.count,
-                every: gh.every.seconds, newRepos: newRepos)
+                every: gh.every.seconds, newRepos: newRepos,
+                problemRepos: repos.filter { !$0.isWaitingForMirror }.compactMap(\.problem).sorted { ($0.status == .failed ? 0 : 1) < ($1.status == .failed ? 0 : 1) },
+                waitingForMirror: repos.filter(\.isWaitingForMirror).count)
         } else {
             status.github = nil
         }
@@ -763,7 +788,7 @@ public final class Engine {
         guard let old, old != new, status.connectError == nil else { return }
         switch new {
         case .error:
-            notify("job-\(j.name)", "\(j.name) needs attention", j.message ?? "Open NAS Sync for details.")
+            notify("job-\(j.name)", j.attentionTitle, j.message ?? "Open NAS Sync for details.")
         case .stale:
             notify("job-\(j.name)", "No backup in \(Format.count(Int(Date().timeIntervalSince(j.lastSuccess ?? started) / 3600), "hour"))",
                    "You've been home on “\(status.homeWiFi ?? "")”, but \(j.name) hasn't completed a backup. Open for details.")

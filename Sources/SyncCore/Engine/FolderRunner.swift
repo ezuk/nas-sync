@@ -22,6 +22,9 @@ public enum FolderRunner {
         }
     }
 
+    /// How many files a run stopped by the safety limit remembers.
+    static let maxBlockedItems = 2000
+
     public static func run(
         job: FolderJobConfig, nas: NAS, store: Store, options: Options, now: Date = Date(),
         isCancelled: @escaping @Sendable () -> Bool = { false },
@@ -35,7 +38,15 @@ public enum FolderRunner {
         let plan: FolderSync.Plan
         do {
             plan = try sync.plan(isCancelled: isCancelled, progress: progress)
-            if !options.allowMassDelete { try sync.checkMassDelete(plan) }
+            if !options.allowMassDelete {
+                do {
+                    try sync.checkMassDelete(plan)
+                } catch {
+                    // So the run in Activity shows what would be archived.
+                    record.items = Array(plan.items.filter { $0.action == .archived }.prefix(maxBlockedItems))
+                    throw error
+                }
+            }
         } catch let error as FolderSync.GuardError {
             record.outcome = .blocked
             record.summary = summary(for: error)

@@ -229,16 +229,6 @@ enum SampleData {
         model.requestRepoProblems()
         render(ReposView(), "2h-repos-problems", width: 1040, height: 520)
 
-        // Files that can't be copied because of their names.
-        var fileRun = RunRecord(kind: .folder, job: "Tresorit", trigger: "changes", started: ago(30), finished: ago(29), outcome: .warning,
-                                summary: "12 files copied (38 MB), 3 failed",
-                                message: "[sender] cannot convert filename: Work/📊 Project tracker.json (Illegal byte sequence)\n[sender] cannot convert filename: Work/📊 Project tracker.csv (Illegal byte sequence)\n[sender] cannot convert filename: Work/🗓️ Timeline.json (Illegal byte sequence)",
-                                items: [RunItem(action: .failed, path: "[sender] cannot convert filename: Work/📊 Project tracker.json (Illegal byte sequence)")])
-        fileRun.counts.failed = 3
-        fileRun.counts.changed = 12
-        fileRun.counts.bytes = 38_000_000
-        render(RunDetailView(run: fileRun).frame(width: 720), "2i-folder-run-problem", width: 720, height: 560)
-
         // Windows.
         s = base(.upToDate)
         s.jobs = [job("Tresorit", .idle, last: ago(4), summary: "12 copied")]

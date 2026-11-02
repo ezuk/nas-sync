@@ -9,6 +9,8 @@ public struct FolderSync: Sendable {
 
     public var job: FolderJobConfig
     public var nas: NAS
+    /// Tests: converts names as an SSH run does, on a local folder.
+    var convertsNames = false
 
     public init(job: FolderJobConfig, nas: NAS) {
         self.job = job
@@ -58,6 +60,8 @@ public struct FolderSync: Sendable {
         public var notes: [String] = []
         /// Files rsync reports it can't copy, found while comparing.
         public var warnings: [String] = []
+        /// Names rsync can't convert for the NAS, relative to the source. They're copied separately.
+        public var unconvertible: [String] = []
         public var isFull: Bool { true }
 
         public var copyCount: Int { newFiles + changedFiles }
@@ -88,9 +92,10 @@ public struct FolderSync: Sendable {
         public var warnings: [String] = []
 
         mutating func addWarnings(_ found: [String], status: Int32) {
-            warnings = found.isEmpty ? ["rsync couldn't copy some files (exit \(status))."] : found
+            let added = found.isEmpty ? ["rsync couldn't copy some files (exit \(status))."] : found
+            warnings += added
             counts.failed = warnings.count
-            items.insert(contentsOf: warnings.map { RunItem(action: .failed, path: $0) }, at: 0)
+            items.insert(contentsOf: added.map { RunItem(action: .failed, path: $0) }, at: 0)
         }
     }
 
@@ -109,23 +114,54 @@ public struct FolderSync: Sendable {
         try checkSource()
         progress(Progress(phase: .comparing))
         let lines = LockedBox<[String]>([])
-        let r = try rsync(dryRun: true, archiveDay: nil, isCancelled: isCancelled) { line in lines.update { $0.append(line) } }
+        let collect: @Sendable (String) -> Void = { line in lines.update { $0.append(line) } }
+        var r = try rsync(dryRun: true, archiveDay: nil, isCancelled: isCancelled, onLine: collect)
+        let unconvertible = Self.unconvertibleNames(r.stderr)
+        if !unconvertible.isEmpty {
+            // A name that can't be converted also stops rsync deleting, so compare again without them.
+            lines.set([])
+            r = try rsync(dryRun: true, archiveDay: nil, excluding: unconvertible, isCancelled: isCancelled, onLine: collect)
+        }
         if r.status != 0, r.status != 23, r.status != 24 { throw SyncError(description: Self.explain(r)) }
         var plan = Plan()
+        plan.unconvertible = unconvertible
         if r.status == 23 || r.status == 24 { plan.warnings = Self.fileErrors(r.stderr) }
+        if lines.get().contains(where: Self.isDeletionSkipped) { plan.warnings.append(Self.deletionsSkippedWarning) }
+        func add(_ item: Line) {
+            switch item.kind {
+            case .new: plan.newFiles += 1; plan.copyBytes += item.size
+            case .changed: plan.changedFiles += 1; plan.copyBytes += item.size
+            case .deleted: plan.deletedFiles += 1
+            case .other: return
+            }
+            plan.items.append(item.runItem(dryRun: true))
+        }
         for line in lines.get() {
             if let n = Self.statsCount(line) { plan.sourceFileCount = n; continue }
             guard let item = Self.parse(line) else {
                 if line.hasPrefix("skipping ") { plan.notes.append(line) }
                 continue
             }
-            switch item.kind {
-            case .new: plan.newFiles += 1; plan.copyBytes += item.size
-            case .changed: plan.changedFiles += 1; plan.copyBytes += item.size
-            case .deleted: plan.deletedFiles += 1
-            case .other: continue
+            add(item)
+        }
+        for path in unconvertible {
+            let found = LockedBox<[String]>([])
+            let isFolder = isDirectory(path)
+            let r = try copyWithoutConversion(path, dryRun: true, archiveDay: nil, isCancelled: isCancelled) { line in found.update { $0.append(line) } }
+            if r.status != 0, r.status != 23, r.status != 24 {
+                // Most likely its folder isn't on the NAS yet.
+                let size = (try? source.appending(path: path).resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                add(Line(kind: .new, size: Int64(size), path: path))
+                plan.sourceFileCount += 1
+                continue
             }
-            plan.items.append(item.runItem(dryRun: true))
+            for line in found.get() {
+                if let n = Self.statsCount(line) { plan.sourceFileCount += n; continue }
+                if var item = Self.parse(line) {
+                    item.path = Self.fullPath(item.path, under: path, isFolder: isFolder)
+                    add(item)
+                }
+            }
         }
         if plan.sourceFileCount == 0, plan.deletedFiles > 0 {
             throw GuardError.sourceEmpty(source.path(percentEncoded: false))
@@ -155,8 +191,11 @@ public struct FolderSync: Sendable {
         var out: Outcome
         do {
             try nas.makeDirectory(job.dest)
-            let r = try rsync(dryRun: false, archiveDay: now, isCancelled: isCancelled) { line in
-                guard let item = Self.parse(line) else { return }
+            let deletionsSkipped = LockedBox(false)
+            let handle: @Sendable (String, @Sendable (String) -> String) -> Void = { line, path in
+                if Self.isDeletionSkipped(line) { deletionsSkipped.set(true) }
+                guard var item = Self.parse(line) else { return }
+                item.path = path(item.path)
                 let report: Progress? = state.update { s in
                     switch item.kind {
                     case .new: s.out.counts.new += 1
@@ -176,15 +215,33 @@ public struct FolderSync: Sendable {
                 }
                 if let report { progress(report) }
             }
-            out = state.get().out
+            let r = try rsync(dryRun: false, archiveDay: now, excluding: plan.unconvertible, isCancelled: isCancelled) { handle($0, { $0 }) }
+            var warnings: [String] = []
+            var fatal: String?
             switch r.status {
             case 0:
                 break
             case 23, 24:
-                out.addWarnings(Self.fileErrors(r.stderr), status: r.status)
+                warnings += Self.fileErrors(r.stderr)
+                if warnings.isEmpty { warnings = ["rsync couldn't copy some files (exit \(r.status))."] }
             default:
-                out.fatalError = Self.explain(r)
+                fatal = Self.explain(r)
             }
+            // After the main run, which creates the folders these go in.
+            if fatal == nil {
+                for path in plan.unconvertible {
+                    let isFolder = isDirectory(path)
+                    let c = try copyWithoutConversion(path, dryRun: false, archiveDay: now, isCancelled: isCancelled) { line in
+                        handle(line, { Self.fullPath($0, under: path, isFolder: isFolder) })
+                    }
+                    if c.status != 0 { warnings += Self.fileErrors(c.stderr).map { "\(path): \($0)" } }
+                    if c.status != 0, Self.fileErrors(c.stderr).isEmpty { warnings.append("\(path): rsync stopped (exit \(c.status)).") }
+                }
+            }
+            if deletionsSkipped.get() { warnings.append(Self.deletionsSkippedWarning) }
+            out = state.get().out
+            out.fatalError = fatal
+            if !warnings.isEmpty { out.addWarnings(warnings, status: r.status) }
         } catch is CancellationError {
             out = state.get().out
             out.fatalError = "Stopped."
@@ -199,19 +256,56 @@ public struct FolderSync: Sendable {
         return out
     }
 
-    func rsync(dryRun: Bool, archiveDay: Date?, isCancelled: @escaping @Sendable () -> Bool, onLine: @escaping @Sendable (String) -> Void) throws -> Command.Result {
+    func rsync(dryRun: Bool, archiveDay: Date?, excluding unconvertible: [String] = [], isCancelled: @escaping @Sendable () -> Bool,
+               onLine: @escaping @Sendable (String) -> Void) throws -> Command.Result {
         guard let exe = nas.rsync else { throw SyncError(description: Rsync.missingMessage) }
         var args = ["-rt", "--delete", "--modify-window=\(Self.timeTolerance)", "--out-format=%i %l %n",
                     "--exclude=/\(Self.archiveFolder)/"]
         args += job.exclude.map { "--exclude=\($0)" }
+        args += Self.excludeRules(for: unconvertible)
         args += nas.rsyncTransportArgs
+        if convertsNames { args.append(NAS.nameConversion) }
         if dryRun {
             args += ["--dry-run", "--stats"]
         } else if let archiveDay {
             args += ["--backup", "--backup-dir=\(Self.archivePath(archiveDay))"]
         }
         args += [source.path(percentEncoded: false) + "/", nas.rsyncTarget(job.dest) + "/"]
+        if !unconvertible.isEmpty {
+            return try Command.runKeepingBytes(exe, args, timeout: 24 * 3600, isCancelled: isCancelled, onLine: onLine)
+        }
         return try Command.run(exe, args, timeout: 24 * 3600, isCancelled: isCancelled, onLine: onLine)
+    }
+
+    /// Copies one name that can't be converted, with conversion off. Its folders on the NAS use precomposed names,
+    /// as converted names do, so they match what the main run created.
+    func copyWithoutConversion(_ path: String, dryRun: Bool, archiveDay: Date?, isCancelled: @escaping @Sendable () -> Bool,
+                               onLine: @escaping @Sendable (String) -> Void) throws -> Command.Result {
+        guard let exe = nas.rsync else { throw SyncError(description: Rsync.missingMessage) }
+        let isFolder = isDirectory(path)
+        let onNAS = path.precomposedStringWithCanonicalMapping
+        var args = ["-rt", "--modify-window=\(Self.timeTolerance)", "--out-format=%i %l %n"]
+        args += job.exclude.map { "--exclude=\($0)" }
+        args += nas.rsyncTransportArgs.filter { $0 != NAS.nameConversion }
+        if isFolder { args.append("--delete") }
+        if dryRun {
+            args += ["--dry-run", "--stats"]
+        } else if let archiveDay {
+            let folder = isFolder ? onNAS : (onNAS as NSString).deletingLastPathComponent
+            args += ["--backup", "--backup-dir=\(nas.absolute(job.dest))/\(Self.archivePath(archiveDay))/\(folder)"]
+        }
+        let slash = isFolder ? "/" : ""
+        args += [source.appending(path: path).path(percentEncoded: false).trimmingSuffix("/") + slash, nas.rsyncTarget("\(job.dest)/\(onNAS)") + slash]
+        return try Command.runKeepingBytes(exe, args, timeout: 24 * 3600, isCancelled: isCancelled, onLine: onLine)
+    }
+
+    private func isDirectory(_ path: String) -> Bool {
+        (try? source.appending(path: path).resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])).map { $0.isDirectory == true && $0.isSymbolicLink != true } ?? false
+    }
+
+    /// The path of an item from `copyWithoutConversion`, where rsync reports names relative to what it was given.
+    static func fullPath(_ name: String, under path: String, isFolder: Bool) -> String {
+        isFolder ? "\(path)/\(name)" : path
     }
 
     /// `_archive/2026-10-29/153012`, relative to the job folder.
@@ -272,6 +366,35 @@ public struct FolderSync: Sendable {
         return Int(line[reg.upperBound...].prefix { $0.isNumber || $0 == "," }.filter(\.isNumber))
     }
 
+    /// Paths rsync couldn't convert for the NAS. macOS's converter rejects any character above U+FFFF, which is most emoji.
+    static func unconvertibleNames(_ stderr: String) -> [String] {
+        stderr.split(separator: "\n").compactMap { Diagnosis.fileName(in: String($0)) }
+    }
+
+    /// Rules that leave paths out of the main run, on both sides. Names on the NAS are precomposed.
+    static func excludeRules(for paths: [String]) -> [String] {
+        paths.flatMap { path -> [String] in
+            let forms = [path, path.precomposedStringWithCanonicalMapping]
+            let unique = forms[0].unicodeScalars.elementsEqual(forms[1].unicodeScalars) ? [forms[0]] : forms
+            return unique.map { "--exclude=/\(escapedPattern($0))" }
+        }
+    }
+
+    /// rsync only treats backslashes as escapes in a pattern that has wildcard characters.
+    static func escapedPattern(_ path: String) -> String {
+        guard path.contains(where: { "*?[".contains($0) }) else { return path }
+        var out = ""
+        for c in path {
+            if "*?[\\".contains(c) { out.append("\\") }
+            out.append(c)
+        }
+        return out
+    }
+
+    static let deletionsSkippedWarning = "rsync hit an error and skipped deleting files on the NAS this run, so files you deleted may still be there."
+
+    static func isDeletionSkipped(_ line: String) -> Bool { line.hasPrefix("IO error encountered") }
+
     /// Per-file problems from rsync's stderr, such as unreadable files or files that vanished while copying.
     static func fileErrors(_ stderr: String) -> [String] {
         stderr.split(separator: "\n").map(String.init).compactMap { line -> String? in
@@ -306,3 +429,6 @@ public struct FolderSync: Sendable {
     }()
 }
 
+private extension String {
+    func trimmingSuffix(_ suffix: String) -> String { hasSuffix(suffix) ? String(dropLast(suffix.count)) : self }
+}

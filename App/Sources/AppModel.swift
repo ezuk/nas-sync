@@ -136,7 +136,7 @@ final class AppModel {
         }
     }
 
-    func perform(_ fix: Diagnosis.Fix, repo: RepoProblem?, folderJob: String?) throws {
+    func perform(_ fix: Diagnosis.Fix, repo: RepoProblem?) throws {
         switch fix {
         case .backUpAgain:
             engine.backUpReposNow()
@@ -144,10 +144,6 @@ final class AppModel {
             engine.syncFoldersNow()
         case .revealClone:
             if let path = repo?.localPath { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) }
-        case .revealFile(let path):
-            if let source = engine.config?.folders.first(where: { $0.name == folderJob })?.source {
-                NSWorkspace.shared.activateFileViewerSelecting([source.appending(path: path)])
-            }
         case .openOnGitHub:
             if let url = repo?.githubURL { NSWorkspace.shared.open(url) }
         case .copyCommand(let command):

@@ -88,8 +88,6 @@ struct ProblemCard: View {
     var subject: String?
     var diagnosis: Diagnosis
     var repo: RepoProblem?
-    /// Folder job the problem belongs to, for showing its files.
-    var folderJob: String?
     /// For the menu: no technical details, and fixes that change the backup are left to the Repos window.
     var compact = false
     @State private var confirming: Diagnosis.Fix?
@@ -172,7 +170,7 @@ struct ProblemCard: View {
 
     private func run(_ fix: Diagnosis.Fix) {
         do {
-            try model.perform(fix, repo: repo, folderJob: folderJob)
+            try model.perform(fix, repo: repo)
             failure = nil
         } catch {
             failure = error.localizedDescription

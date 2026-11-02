@@ -381,3 +381,132 @@ final class TempPair {
         #expect(throws: FolderSync.GuardError.self) { try sync.plan() }
     }
 }
+
+/// Names macOS's converter rejects, on a local folder converting names the way an SSH run does.
+@Suite(.serialized) struct UnconvertibleNameTests {
+    private let emoji = "tables/📊 tracker.json"
+
+    private func job(_ t: TempPair) -> FolderSync {
+        let config = FolderJobConfig(name: "x", source: t.source, dest: "x", exclude: [], archiveDays: 90, staleAfter: Interval(seconds: 86400),
+                                     quietPeriod: Interval(seconds: 0), maxDeletePercent: 100, maxDeleteFiles: 100000, line: 1)
+        var sync = FolderSync(job: config, nas: t.nas)
+        sync.convertsNames = true
+        return sync
+    }
+
+    private func run(_ sync: FolderSync, now: Date = Date()) throws -> (FolderSync.Plan, FolderSync.Outcome) {
+        let plan = try sync.plan()
+        return (plan, sync.execute(plan, now: now))
+    }
+
+    @Test(.enabled(if: hasRsync)) func copiesTheFileAndKeepsItsName() throws {
+        let t = try TempPair()
+        try t.write(emoji, "one")
+        try t.write("plain.txt", "plain")
+        let (plan, out) = try run(job(t))
+        #expect(plan.unconvertible == [emoji])
+        #expect(plan.newFiles == 2)
+        #expect(plan.warnings.isEmpty)
+        #expect(out.warnings.isEmpty)
+        #expect(out.counts.new == 2)
+        #expect(out.items.contains { $0.path == emoji })
+        #expect(t.read(emoji) == "one")
+        #expect(t.read("plain.txt") == "plain")
+    }
+
+    @Test(.enabled(if: hasRsync)) func deletionsStillHappen() throws {
+        let t = try TempPair()
+        try t.write(emoji, "one")
+        try t.write("stale.txt", "old", in: t.dest)
+        let (plan, out) = try run(job(t))
+        #expect(plan.deletedFiles == 1)
+        #expect(out.warnings.isEmpty)
+        #expect(!t.exists("stale.txt"))
+    }
+
+    @Test(.enabled(if: hasRsync)) func updateArchivesThePreviousVersion() throws {
+        let t = try TempPair()
+        let old = Date().addingTimeInterval(-3600)
+        try t.write(emoji, "one", modified: old)
+        _ = try run(job(t))
+        try t.write(emoji, "changed", modified: Date())
+        let date = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 29, hour: 15, minute: 30, second: 12))!
+        let (plan, out) = try run(job(t), now: date)
+        #expect(plan.changedFiles == 1)
+        #expect(out.counts.changed == 1)
+        #expect(t.read(emoji) == "changed")
+        #expect(t.read("_archive/2026-10-29/153012/\(emoji)") == "one")
+    }
+
+    @Test(.enabled(if: hasRsync)) func unchangedFileMeansNothingToDo() throws {
+        let t = try TempPair()
+        try t.write(emoji, "one", modified: Date().addingTimeInterval(-3600))
+        _ = try run(job(t))
+        let plan = try job(t).plan()
+        #expect(plan.isEmpty)
+        #expect(plan.sourceFileCount == 1)
+    }
+
+    @Test(.enabled(if: hasRsync)) func removingTheFileArchivesIt() throws {
+        let t = try TempPair()
+        try t.write(emoji, "one")
+        try t.write("tables/keep.txt", "keep")
+        _ = try run(job(t))
+        try t.delete(emoji)
+        let (plan, _) = try run(job(t))
+        #expect(plan.unconvertible.isEmpty)
+        #expect(plan.deletedFiles == 1)
+        #expect(!t.exists(emoji))
+    }
+
+    @Test(.enabled(if: hasRsync)) func folderWithAnEmojiNameIsCopiedWhole() throws {
+        let t = try TempPair()
+        try t.write("📁 box/inner/a.txt", "a")
+        _ = try run(job(t))
+        #expect(t.read("📁 box/inner/a.txt") == "a")
+        try t.delete("📁 box/inner/a.txt")
+        try t.write("📁 box/inner/b.txt", "b")
+        let (plan, _) = try run(job(t))
+        #expect(plan.unconvertible == ["📁 box"])
+        #expect(!t.exists("📁 box/inner/a.txt"))
+        #expect(t.read("📁 box/inner/b.txt") == "b")
+    }
+
+    @Test(.enabled(if: hasRsync)) func goesInThePrecomposedFolderOnTheNAS() throws {
+        let t = try TempPair()
+        let decomposed = "cafe\u{301}"
+        try t.write("\(decomposed)/📊 x.txt", "x")
+        try t.write("\(decomposed)/plain.txt", "p")
+        let (plan, out) = try run(job(t))
+        #expect(out.warnings.isEmpty)
+        #expect(plan.unconvertible.count == 1)
+        let folders = try FileManager.default.contentsOfDirectory(atPath: t.dest.path(percentEncoded: false))
+        #expect(folders.count == 1)
+        #expect(folders.first?.unicodeScalars.count == 4)
+        let inside = try FileManager.default.contentsOfDirectory(atPath: t.dest.appending(path: "caf\u{e9}").path(percentEncoded: false))
+        #expect(inside.count == 2)
+    }
+
+    // This Mac's disk treats the two forms as one name, so only the bytes show the difference.
+    @Test func argumentsKeepTheirExactBytes() throws {
+        let precomposed = "caf\u{e9} it's"
+        let r = try Command.runKeepingBytes(URL(filePath: "/usr/bin/printf"), ["%s", precomposed])
+        #expect(Array(r.stdout.utf8) == Array(precomposed.utf8))
+        #expect(r.status == 0)
+    }
+
+    @Test func patternsEscapeWildcardsOnlyWhenNeeded() {
+        #expect(FolderSync.escapedPattern("a b/📊.txt") == "a b/📊.txt")
+        #expect(FolderSync.escapedPattern("a*[b]?.txt") == "a\\*\\[b]\\?.txt")
+        #expect(FolderSync.excludeRules(for: ["cafe\u{301}/x"]).count == 2)
+        #expect(FolderSync.excludeRules(for: ["plain/x"]) == ["--exclude=/plain/x"])
+    }
+
+    @Test func readsNamesFromRsyncErrors() {
+        let stderr = """
+        [sender] cannot convert filename: a/📊 x.txt (Illegal byte sequence)
+        rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1347)
+        """
+        #expect(FolderSync.unconvertibleNames(stderr) == ["a/📊 x.txt"])
+    }
+}

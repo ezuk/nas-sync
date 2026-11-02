@@ -275,7 +275,7 @@ struct PopoverView: View {
             if !folders.isEmpty || !failed.isEmpty || waiting > 0 {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(folders, id: \.0) { name, d in
-                        ProblemCard(subject: name, diagnosis: d, folderJob: name, compact: true)
+                        ProblemCard(subject: name, diagnosis: d, compact: true)
                     }
                     ForEach(failed.prefix(2)) { repo in
                         ProblemCard(subject: repo.fullName, diagnosis: Diagnosis.forRepo(repo), repo: repo, compact: true)

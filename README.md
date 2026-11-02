@@ -339,8 +339,6 @@ swift run nas-sync mirror [repo]               # where each repo's mirror is on 
 
 **A backup needs attention.** The menu explains what went wrong and offers the fix, such as backing up again or showing the file involved. For more, open Activity, or the Problems tab in Repos, and expand "Technical details" for the original error. "Copy Details" puts it on the clipboard.
 
-**A file can't be backed up because of its name.** rsync can't convert some emoji in file names for the NAS. Everything else still copies. Rename the file without the emoji and it copies on the next sync.
-
 **A folder fails with a permission error on your Mac.** Grant Full Disk Access in System Settings > Privacy & Security, then restart the app.
 
 **A run stopped at the safety limit.** Look at the run in Activity, or run `swift run nas-sync run folders --dry-run --allow-mass-delete -v` to see every file it would archive. If the list is what you expect, confirm from the menu.

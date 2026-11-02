@@ -39,9 +39,14 @@ import Testing
         #expect(d.fixes.contains(.copyCommand("git config --global --add safe.directory '/code/it'\\''s'")))
     }
 
-    @Test func fileNameConversionNamesTheFile() {
+    @Test func fileNameConversionSortsItselfOut() {
         let d = Diagnosis.explain("[sender] cannot convert filename: docs/📊 tracker.json (Illegal byte sequence)")
-        #expect(d.fixes == [.revealFile("docs/📊 tracker.json")])
+        #expect(d.isTransient)
+        #expect(Diagnosis.fileName(in: d.technical) == "docs/📊 tracker.json")
+    }
+
+    @Test func skippedDeletionsAreExplained() {
+        #expect(Diagnosis.explain(FolderSync.deletionsSkippedWarning).title == "Deleted files weren't cleared from the NAS")
     }
 
     @Test func repoStatesOfferTheRightFixes() {
@@ -64,17 +69,15 @@ import Testing
         #expect(problems[1].diagnosis.title == "The connection dropped")
     }
 
-    @Test func folderRunCountsFilesAndPrefersLastingProblems() throws {
+    @Test func folderRunPrefersLastingProblems() throws {
         var c = RunCounts()
-        c.failed = 4
-        let message = "Changed while copying, will retry: a\n[sender] cannot convert filename: b (Illegal byte sequence)\n[sender] cannot convert filename: c (Illegal byte sequence)"
+        c.failed = 3
+        let message = "Changed while copying, will retry: a\nopen \"/b\": Permission denied (13)"
         let run = RunRecord(kind: .folder, job: "Tresorit", trigger: "t", started: Date(), outcome: .warning, counts: c, message: message)
         let d = try #require(Diagnosis.forFolderRun(run))
-        #expect(d.title == "4 files can't be backed up because of their names")
+        #expect(d.title == "macOS or the NAS blocked access")
         #expect(!d.isTransient)
-        #expect(d.fixes == [.revealFile("b")])
         #expect(d.technical.contains("and 1 more"))
-        #expect(d.advice.hasPrefix("Rename them"))
     }
 
     @Test func folderRunWithOnlyChangedFilesIsTransient() throws {

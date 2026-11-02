@@ -39,8 +39,6 @@ public struct Diagnosis: Sendable, Equatable {
         case backUpAgain
         case syncAgain
         case revealClone
-        /// A path relative to the folder being synced.
-        case revealFile(String)
         case openOnGitHub
         case copyCommand(String)
         case forgetRepo
@@ -53,7 +51,6 @@ public struct Diagnosis: Sendable, Equatable {
             case .backUpAgain: "Back Up Again"
             case .syncAgain: "Sync Again"
             case .revealClone: "Show Clone"
-            case .revealFile: "Show File"
             case .openOnGitHub: "Open on GitHub"
             case .copyCommand: "Copy Command"
             case .forgetRepo: "Forget This Repo"
@@ -142,17 +139,10 @@ public struct Diagnosis: Sendable, Equatable {
         d.fixes = run.outcome == .failed ? d.fixes.map { $0 == .backUpAgain ? .syncAgain : $0 } : d.fixes.filter { $0 != .backUpAgain }
         d.technical = message
         if run.counts.failed > lines.count { d.technical += "\n(and \(run.counts.failed - lines.count) more; see the run in Activity)" }
-        if d.title == Self.nameTitle, run.counts.failed > 1 {
-            d.title = "\(run.counts.failed.formatted()) files can't be backed up because of their names"
-            d.explanation = "rsync can't convert these file names for the NAS, so these files aren't being backed up. Some emoji in file names cause this. Everything else still copies."
-            d.advice = "Rename them without the emoji, and they'll copy on the next sync. The run in Activity lists them all."
-        }
         return d
     }
 
     // MARK: Error text
-
-    static let nameTitle = "A file can't be backed up because of its name"
 
     /// Recognizes an error from git, rsync, ssh or the system, as stored in history.
     public static func explain(_ text: String, localPath: String? = nil) -> Diagnosis {
@@ -190,16 +180,21 @@ public struct Diagnosis: Sendable, Equatable {
                              fixes: [.backUpAgain], technical: text)
         }
         if has("cannot convert filename", "illegal byte sequence") {
-            let file = fileName(in: text)
-            return Diagnosis(title: nameTitle,
-                             explanation: "rsync can't convert this file's name for the NAS, so the file isn't being backed up. Some emoji in file names cause this. Everything else still copies.",
-                             advice: "Rename the file without the emoji, and it'll copy on the next sync.",
-                             fixes: file.map { [.revealFile($0)] } ?? [], technical: text)
+            return Diagnosis(title: "A new file's name needs special handling",
+                             explanation: "rsync can't convert this name for the NAS, usually because of an emoji, so NAS Sync copies these files separately. This one appeared during the run.",
+                             advice: "Nothing to do. It's copied on the next sync.",
+                             fixes: [], technical: text, isTransient: true)
         }
         if has("couldn't copy some files") {
             return Diagnosis(title: "Some files couldn't be copied",
                              explanation: "rsync skipped some files, but this run didn't record which ones. Everything else was copied.",
                              advice: "Sync again, and this will name the files.",
+                             fixes: [.syncAgain], technical: text)
+        }
+        if has("skipped deleting files") {
+            return Diagnosis(title: "Deleted files weren't cleared from the NAS",
+                             explanation: "rsync hit an error, and when that happens it doesn't delete anything for the rest of the run. Files you deleted may still be on the NAS. Nothing was lost.",
+                             advice: "Sync again. If this keeps happening, the other problems listed for this run are the cause.",
                              fixes: [.syncAgain], technical: text)
         }
         if has("changed while copying", "file has vanished") {

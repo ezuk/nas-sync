@@ -77,6 +77,21 @@ public enum Command {
     }
 }
 
+extension Command {
+    /// Like `run`, for arguments that must keep their exact bytes. `Process` passes every argument through
+    /// `fileSystemRepresentation`, which decomposes accented characters, so these go through a script file instead.
+    public static func runKeepingBytes(
+        _ executable: URL, _ args: [String], timeout: TimeInterval = 3600,
+        isCancelled: @Sendable () -> Bool = { false }, onLine: (@Sendable (String) -> Void)? = nil
+    ) throws -> Result {
+        let script = FileManager.default.temporaryDirectory.appending(path: "nas-sync-\(UUID().uuidString).sh")
+        let words = ([executable.path(percentEncoded: false)] + args).map(NAS.quote).joined(separator: " ")
+        try Data("exec \(words)\n".utf8).write(to: script)
+        defer { try? FileManager.default.removeItem(at: script) }
+        return try run(URL(filePath: "/bin/sh"), [script.path(percentEncoded: false)], timeout: timeout, isCancelled: isCancelled, onLine: onLine)
+    }
+}
+
 /// Splits a byte stream into lines.
 final class LineSplitter: @unchecked Sendable {
     private var buffer = Data()

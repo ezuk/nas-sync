@@ -68,10 +68,13 @@ public final class NAS: Sendable {
         return config.ssh.map { "\($0):\(path)" } ?? path
     }
 
+    /// Converts macOS's decomposed file names to the precomposed form used on the NAS.
+    static let nameConversion = "--iconv=utf-8-mac,utf-8"
+
     /// Arguments that make rsync talk to the NAS.
     public var rsyncTransportArgs: [String] {
         guard isRemote else { return [] }
-        return ["-e", rsyncShell, "--rsync-path=\(config.remoteRsync)", "--iconv=utf-8-mac,utf-8"]
+        return ["-e", rsyncShell, "--rsync-path=\(config.remoteRsync)", Self.nameConversion]
     }
 
     /// Runs a shell script on the NAS and returns stdout.
@@ -184,7 +187,7 @@ public final class NAS: Sendable {
         guard let rsync else { throw CommandError(tool: "rsync", status: -1, output: Rsync.missingMessage) }
         let parent = (rel as NSString).deletingLastPathComponent
         if !parent.isEmpty { try makeDirectory(parent) }
-        let r = try Command.run(rsync, ["-t"] + rsyncTransportArgs.filter { !$0.hasPrefix("--iconv") }
+        let r = try Command.run(rsync, ["-t"] + rsyncTransportArgs.filter { $0 != Self.nameConversion }
                                 + [file.path(percentEncoded: false), rsyncTarget(rel)], isCancelled: isCancelled)
         guard r.status == 0 else { throw CommandError(tool: "rsync", status: r.status, output: r.stderr) }
         let local = try XZ.sha256(of: file)
@@ -205,7 +208,7 @@ public final class NAS: Sendable {
         try makeDirectory(rel)
         var sent: Int64 = 0
         for pass in ["--exclude=/packed-refs", "--delete-after"] {
-            let r = try Command.run(rsync, ["-rt", pass, "--stats"] + rsyncTransportArgs.filter { !$0.hasPrefix("--iconv") }
+            let r = try Command.run(rsync, ["-rt", pass, "--stats"] + rsyncTransportArgs.filter { $0 != Self.nameConversion }
                                     + [local.path(percentEncoded: false) + "/", rsyncTarget(rel) + "/"],
                                     timeout: 6 * 3600, isCancelled: isCancelled)
             guard r.status == 0 else { throw CommandError(tool: "rsync", status: r.status, output: FolderSync.explain(r)) }
@@ -225,7 +228,7 @@ public final class NAS: Sendable {
     public func downloadFolder(_ rel: String, to local: URL, isCancelled: @Sendable () -> Bool = { false }) throws {
         guard let rsync else { throw CommandError(tool: "rsync", status: -1, output: Rsync.missingMessage) }
         try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
-        let r = try Command.run(rsync, ["-rt"] + rsyncTransportArgs.filter { !$0.hasPrefix("--iconv") }
+        let r = try Command.run(rsync, ["-rt"] + rsyncTransportArgs.filter { $0 != Self.nameConversion }
                                 + [rsyncTarget(rel) + "/", local.path(percentEncoded: false) + "/"],
                                 timeout: 6 * 3600, isCancelled: isCancelled)
         guard r.status == 0 else { throw CommandError(tool: "rsync", status: r.status, output: FolderSync.explain(r)) }

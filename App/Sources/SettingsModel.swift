@@ -31,7 +31,7 @@ struct FieldKey: Hashable {
                 switch key {
                 case "every", "around", "stale_after", "enabled": return .git
                 case "remote_only", "repos": return .gitRepos
-                case "dest", "groups", "on_remote_delete", "gc": return .gitNAS
+                case "dest", "groups", "on_remote_delete", "helper_repos": return .gitNAS
                 default: return .gitConfig
                 }
             default: return .file
@@ -272,7 +272,7 @@ final class SettingsModel {
         case .named("nas"): ["ssh", "port", "path", "rsync", "remote_rsync"]
         case .named("battery"): ["hold_below_percent", "but_not_longer_than"]
         case .named("folders"): ["quiet_period", "at_most_every", "nightly_check", "archive_days", "max_delete_percent", "max_delete_files", "stale_after", "exclude"]
-        case .named("github"): ["enabled", "every", "around", "stale_after", "dest", "scan", "repos", "new_repos", "exclude", "remote_only", "groups", "on_remote_delete", "gc"]
+        case .named("github"): ["enabled", "every", "around", "stale_after", "dest", "scan", "repos", "new_repos", "exclude", "remote_only", "groups", "on_remote_delete", "helper_repos"]
         default: []
         }
     }

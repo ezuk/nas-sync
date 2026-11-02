@@ -172,6 +172,8 @@ public enum RepoDiscovery {
         for full in config.remoteOnly {
             let parts = full.split(separator: "/").map(String.init)
             guard parts.count == 2 else { continue }
+            // A clone also named here counts as listed: it was asked for by name.
+            byName[full.lowercased()]?.isListed = true
             add(RepoTarget(owner: parts[0], name: parts[1], source: .remoteOnly, localPath: nil, remoteURL: GitHubRemote.sshURL(full)))
         }
         let globs = config.excludeSet

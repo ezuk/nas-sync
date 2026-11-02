@@ -583,12 +583,99 @@ struct GitNASPane: View {
                     .fixedSize()
                 }
             }
-            SettingsGroup(title: "Local clones", dimmed: !on) {
-                SettingsRow(label: "Tidy clones before backing up", fileKey: "github.gc", help: "Runs git gc on each local clone first.") {
-                    SettingToggle(isOn: g.gc) { s.setBool(f("gc"), $0 ? true : nil) }
+            NASHelperSection(repoPatterns: g.helperRepos, dimmed: !on)
+        }
+    }
+}
+
+/// The helper on the NAS: its version, health checks and latest run.
+struct NASHelperSection: View {
+    @Environment(AppModel.self) private var model
+    var repoPatterns: [String]
+    var dimmed = false
+
+    var body: some View {
+        let status = model.engine.status
+        let problem = status.helper.flatMap { Diagnosis.forHelper($0) } ?? Diagnosis.forHelperRun(status.helperRun)
+        if let problem { ProblemCard(subject: "NAS helper", diagnosis: problem, compact: true) }
+        SettingsGroup(title: "NAS helper",
+                      footer: "A small program on the NAS that backs up repos straight from GitHub, including Git LFS files. NAS Sync installs and updates it.",
+                      dimmed: dimmed) {
+            SettingsRow(label: "Version") { valueText(versionText(status)) }
+            SettingsRow(label: "Repos it backs up", fileKey: "github.helper_repos",
+                        help: repoPatterns.isEmpty ? "This Mac still backs up every repo itself." : nil) {
+                valueText(reposText(status))
+            }
+            ForEach(status.helper?.checks ?? []) { check in
+                SettingsRow(label: checkLabel(check)) {
+                    HStack(spacing: 6) {
+                        StatusDot(color: checkColor(check))
+                        valueText(checkDetail(check))
+                    }
                 }
             }
+            SettingsRow(label: "Latest run") { valueText(runText(status.helperRun)) }
+            SettingsRow(label: "") {
+                Button("Check Again") { model.engine.checkHelperNow() }.disabled(!status.nasConnected)
+                Button("Run Now") { model.engine.runHelperNow() }
+                    .disabled(!status.nasConnected || repoPatterns.isEmpty || status.helperRun?.isFinished == false)
+            }
         }
+    }
+
+    private func valueText(_ text: String) -> some View {
+        Text(text).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(text)
+    }
+
+    private func versionText(_ status: StatusSnapshot) -> String {
+        guard let report = status.helper else { return status.nasConnected ? "Not checked yet" : "NAS not connected" }
+        guard let installed = report.installedVersion else { return "Not installed" }
+        switch report.state {
+        case .ready: return "Version \(installed), up to date"
+        case .needsInstall: return "Version \(installed), update available"
+        case .appTooOld: return "Version \(installed), newer than this app"
+        case .failed: return "Version \(installed), couldn't update"
+        }
+    }
+
+    private func reposText(_ status: StatusSnapshot) -> String {
+        if repoPatterns.isEmpty { return "None yet" }
+        return status.helperRun?.total.map { Format.count($0, "repo") } ?? repoPatterns.joined(separator: ", ")
+    }
+
+    private func checkLabel(_ check: HelperCheck) -> String {
+        if let owner = check.tokenOwner { return "GitHub token for \(owner)" }
+        return switch check.id {
+        case "python": "Python"
+        case "git": "Git"
+        case "git-lfs": "Git LFS"
+        case "git-transport": "Git over SSH"
+        case "tokens": "GitHub tokens"
+        default: check.id
+        }
+    }
+
+    private func checkColor(_ check: HelperCheck) -> Color {
+        switch check.status {
+        case .ok: Palette.green
+        case .failed: Palette.red
+        case .unknown: Palette.grey
+        }
+    }
+
+    private func checkDetail(_ check: HelperCheck) -> String {
+        guard let expires = check.expires else { return check.detail }
+        return "\(check.detail), expires \(expires.formatted(date: .abbreviated, time: .omitted))"
+    }
+
+    private func runText(_ run: HelperRunReport?) -> String {
+        guard let run else { return "Hasn't run yet" }
+        if !run.isFinished {
+            let done = "\(run.repos.count) of \(run.total ?? 0) done"
+            return run.current.map { "Running: \(done), on \($0)" } ?? "Running: \(done)"
+        }
+        let when = run.finished.map { StatusText.dayAndTime($0) } ?? ""
+        return "\(when): \(run.runRecord().summary)"
     }
 }
 

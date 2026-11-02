@@ -182,6 +182,27 @@ public struct Diagnosis: Sendable, Equatable {
         return nil
     }
 
+    /// How long the helper can go without a run before it's reported. Its schedule runs hourly.
+    static let helperRunOverdue: TimeInterval = 3 * 3600
+    /// A first backup of every repo can take many hours.
+    static let helperRunStuck: TimeInterval = 24 * 3600
+
+    /// Scheduled runs on the NAS have stopped, or a run has stalled.
+    public static func forHelperRun(_ run: HelperRunReport?, now: Date = Date()) -> Diagnosis? {
+        guard let run else { return nil }
+        let advice = "Check the task in DSM's Task Scheduler on the NAS, then run the helper from Settings."
+        if run.isFinished {
+            guard let finished = run.finished, now.timeIntervalSince(finished) > helperRunOverdue else { return nil }
+            return Diagnosis(title: "The NAS helper hasn't run lately",
+                             explanation: "Its last run finished \(Format.duration(now.timeIntervalSince(finished))) ago, so GitHub changes aren't reaching the NAS.",
+                             advice: advice, fixes: [.openSettings, .checkHelperAgain], technical: "last run finished \(finished)")
+        }
+        guard let started = run.started, now.timeIntervalSince(started) > helperRunStuck else { return nil }
+        return Diagnosis(title: "The NAS helper's run looks stuck",
+                         explanation: "It started \(Format.duration(now.timeIntervalSince(started))) ago and hasn't finished.",
+                         advice: advice, fixes: [.openSettings, .checkHelperAgain], technical: "started \(started), on \(run.current ?? "unknown")")
+    }
+
     // MARK: Runs
 
     /// The problems in a finished run, each with what it's about. Empty when there's nothing to explain.

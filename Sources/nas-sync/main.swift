@@ -165,18 +165,24 @@ case "mirror":
     let repos = openStore().repos().filter { r in r.mirrorPath != nil && (query.map { r.fullName.lowercased().contains($0) } ?? true) }
     if repos.isEmpty { fail(query == nil ? "No repo has a mirror on the NAS yet." : "No backed-up repo matches \(args[1]).") }
     for r in repos {
-        let path = GitHubBackup.nasMirrorPath(dest: gh.dest, mirrorPath: r.mirrorPath!)
+        let path = GitHubBackup.nasMirrorPath(dest: gh.dest, record: r)!
         let folder = (path as NSString).lastPathComponent
         let kept = r.deletedRefsKept.isEmpty ? "" : " · \(Format.count(r.deletedRefsKept.count, "deleted ref")) kept"
         print("\(r.fullName)\(r.sizeOnNAS.map { " (\(Format.bytes($0)))" } ?? "")\(kept)")
-        print("  git clone \(nas.gitCloneURL(path))")
-        print("  no git on the NAS: \(nas.copyDownCommand(path, to: folder)) && git clone \(folder)")
+        if r.usesHelper {
+            let name = String(folder.dropLast(".git".count))
+            print("  \(nas.helperCloneCommand(path, to: name))")
+            print("  with Git LFS files: \(nas.copyDownCommand(path, to: folder)) && git clone \"file://$PWD/\(folder)\" \(name) && cd \(name) && git lfs install --local && git lfs fetch --all origin && git lfs pull")
+        } else {
+            print("  git clone \(nas.gitCloneURL(path))")
+            print("  no git on the NAS: \(nas.copyDownCommand(path, to: folder)) && git clone \(folder)")
+        }
     }
     print("""
 
-    git clone over SSH needs git on the NAS. Without it, git says git-upload-pack isn't found; use the rsync line.
-    A clone gets every branch and tag. Branches and tags deleted at the source are kept in the mirror
-    under refs/deleted/<day>/. To see them, clone with --mirror and run: git for-each-ref refs/deleted
+    A clone gets every branch and tag. Work that was only on a Mac is in branches and tags named from-mac/<name>.
+    Branches and tags deleted at the source are kept in the mirror under refs/deleted/<day>/. To see them, clone
+    with --mirror and run: git for-each-ref refs/deleted
     or fetch them into a clone with: git fetch origin 'refs/deleted/*:refs/deleted/*'
     """)
 
@@ -208,17 +214,16 @@ case "helper":
         exit(0)
     }
     if args.dropFirst().first == "run" {
-        guard let only = option("--only") else { fail("usage: nas-sync helper run --only owner/repo,owner/repo [--wait]") }
         let wait = flag("--wait")
         guard let gh = config.githubSettings else { fail("There's no [github] section in the config.") }
-        let names = Set(only.split(separator: ",").map(String.init))
+        let names = option("--only").map { Set($0.split(separator: ",").map(String.init)) }
         do {
             let health = try helper.ensure()
             guard health.state == .ready else { fail("The helper isn't ready: \(health.error ?? health.state.rawValue)") }
             if health.change != nil, let run = health.runRecord(started: started) { _ = try? openStore().saveRun(run) }
             let manifest = HelperManifest.build(config: gh, nas: nas, store: openStore(), only: names)
             let found = Set(manifest.repos.map { $0.name.lowercased() })
-            let missing = names.filter { !found.contains($0.lowercased()) }
+            let missing = (names ?? []).filter { !found.contains($0.lowercased()) }
             if !missing.isEmpty { fail("Not backed up by this config: \(missing.sorted().joined(separator: ", "))") }
             try helper.save(manifest)
             let last = try helper.lastRun()

@@ -44,6 +44,17 @@ public struct RepoRecord: Sendable, Codable, Equatable, Identifiable {
     public var firstSeen: Date
     public var unpushedCommits: Int?
     public var usesLFS: Bool
+    /// True once the NAS helper has handled this repo. Its mirror is then in `mirrors-v2`, and `refs` and
+    /// `fingerprint` still describe the app's old mirror.
+    public var usesHelper: Bool
+    /// The refs this Mac last sent to the helper's mirror.
+    public var macFingerprint: String?
+    /// Why this Mac couldn't send its work to the helper's mirror.
+    public var pushError: String?
+    /// What went wrong in the helper's latest run.
+    public var helperProblem: String?
+    /// GitHub told the helper this repo doesn't exist.
+    public var helperGone: Bool
 
     public var id: String { fullName }
 
@@ -60,6 +71,8 @@ public struct RepoRecord: Sendable, Codable, Equatable, Identifiable {
         status = .ok
         self.firstSeen = firstSeen
         usesLFS = false
+        usesHelper = false
+        helperGone = false
     }
 
     public init(from decoder: any Decoder) throws {
@@ -80,6 +93,25 @@ public struct RepoRecord: Sendable, Codable, Equatable, Identifiable {
         firstSeen = try c.decodeIfPresent(Date.self, forKey: .firstSeen) ?? Date()
         unpushedCommits = try c.decodeIfPresent(Int.self, forKey: .unpushedCommits)
         usesLFS = try c.decodeIfPresent(Bool.self, forKey: .usesLFS) ?? false
+        usesHelper = try c.decodeIfPresent(Bool.self, forKey: .usesHelper) ?? false
+        macFingerprint = try c.decodeIfPresent(String.self, forKey: .macFingerprint)
+        pushError = try c.decodeIfPresent(String.self, forKey: .pushError)
+        helperProblem = try c.decodeIfPresent(String.self, forKey: .helperProblem)
+        helperGone = try c.decodeIfPresent(Bool.self, forKey: .helperGone) ?? false
+    }
+
+    /// Sets `status` and `message` from what the helper and this Mac last reported.
+    mutating func refreshHelperStatus() {
+        if helperGone {
+            status = .goneFromGitHub
+            message = helperProblem ?? "GitHub says this repo doesn't exist any more. The mirror on the NAS is kept."
+        } else if let problem = pushError ?? helperProblem {
+            status = .failed
+            message = problem
+        } else {
+            status = .ok
+            message = nil
+        }
     }
 }
 
@@ -170,6 +202,13 @@ public final class Store: @unchecked Sendable {
     }
 
     /// Recent runs, newest first. Items are only loaded when `withItems` is true.
+    /// Saves a helper install or update, unless another check just reported the same one.
+    func saveHelperChange(_ run: RunRecord) {
+        let recent = (try? recentRuns(limit: 5, kinds: [.helper])) ?? []
+        if recent.contains(where: { $0.summary == run.summary && abs($0.started.timeIntervalSince(run.started)) < 300 }) { return }
+        _ = try? saveRun(run)
+    }
+
     public func recentRuns(limit: Int = 300, kinds: Set<RunKind>? = nil, withItems: Bool = false) throws -> [RunRecord] {
         let rows = try locked {
             try db.query("SELECT * FROM runs ORDER BY started DESC, id DESC LIMIT ?", [.int(Int64(limit * (kinds == nil ? 1 : 4)))])
@@ -265,6 +304,8 @@ public final class Store: @unchecked Sendable {
 
 /// Keys used in the key-value table.
 public enum StoreKey {
+    static let helperRunSeen = "helperRunSeen"
+    static let helperRunFailed = "helperRunFailed"
     public static func lastSuccess(_ job: String) -> String { "lastSuccess.\(job)" }
     public static func lastAttempt(_ job: String) -> String { "lastAttempt.\(job)" }
     public static func eventCursor(_ job: String) -> String { "eventCursor.\(job)" }

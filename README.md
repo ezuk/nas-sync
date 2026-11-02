@@ -75,11 +75,20 @@ Once a day, around the time you set, the app goes through your repos.
 
 It finds them in three ways. It searches the folders listed in `scan` for git repos whose remote is on GitHub. It backs up the clones listed in `repos`, wherever they are on your Mac; these don't need a GitHub remote. And it backs up the repos listed in `remote_only`, which you don't have on your Mac, straight from GitHub.
 
-Each repo becomes one bare git mirror on the NAS, at `github-backups/mirrors/<group>/<repo>.git`. Groups sort repos into folders by owner; repos with no GitHub remote go in `mirrors/local`, and for those the NAS has the only other copy.
+Each repo becomes one bare git mirror on the NAS. Groups sort repos into folders by owner. With `helper_repos` set, which is the way to get everything on GitHub, mirrors are at `github-backups/mirrors-v2/<group>/<repo>.git`. Otherwise they're at `github-backups/mirrors/<group>/<repo>.git`. Repos with no GitHub remote always go in `mirrors/local`, and for those the NAS has the only other copy.
 
-For each repo the app reads where every branch and tag points (and your stash, for repos on your Mac) and compares that with the last run. If nothing moved and the mirror is on the NAS, the repo is skipped. Otherwise it writes down what changed, such as "3 new commits on main, new branch fix/x, 2 commits not pushed to GitHub yet", and updates the mirror:
+**With the NAS helper.** A small program on the NAS, which the app installs and updates, backs up the repos in `helper_repos`. Your Mac doesn't need to be on.
 
-1. It fetches every branch and tag into its copy of the mirror on this Mac (in the app's cache folder). If that copy is missing, it first copies the mirror back from the NAS, so a lost cache never makes the NAS copy smaller.
+1. It fetches every branch and tag straight from GitHub, including branches you never pulled, using a read-only token saved on the NAS in `.nas-sync/github-token-<owner>`. If the owner's token is refused, it tries your other tokens, because a repo moved to another account can only be read with that account's token.
+2. It downloads the Git LFS files of every branch and tag.
+3. Your Mac sends what your local clones hold with `git push`, into `refs/mac/` in the mirror. This doesn't change your clones and skips their hooks. Branches and tags with commits GitHub doesn't have appear as `from-mac/<name>`. A `from-mac/` branch goes away once GitHub has its commits. If you delete it on your Mac first, it moves to `refs/deleted/`. Git LFS files of commits you haven't pushed aren't copied.
+4. Anything deleted or force-pushed moves to `refs/deleted/<day>/` in the mirror and stays there, unless you set `on_remote_delete = "prune"`.
+
+The helper needs Git and Git LFS on the NAS, from the Git package in Package Center, and an hourly task in DSM's Task Scheduler that runs `python3 <NAS folder>/.nas-sync/helper/current/nas-sync-helper.py run`. Settings > Git > On the NAS shows its version, health and latest run, and the app warns you if runs stop.
+
+**Without the helper.** For each repo the app reads where every branch and tag points (and your stash, for repos on your Mac) and compares that with the last run. If nothing moved and the mirror is on the NAS, the repo is skipped. Otherwise it writes down what changed, such as "3 new commits on main, new branch fix/x, 2 commits not pushed to GitHub yet", and updates the mirror:
+
+1. It fetches every branch and tag into its copy of the mirror on this Mac (in the app's cache folder). If that copy is missing, it first copies the mirror back from the NAS, so a lost cache never makes the NAS copy smaller. For a local clone, that means only what the clone has, not what's on GitHub.
 2. Branches and tags that no longer exist at the source aren't deleted. They move to `refs/deleted/<day>/heads/<branch>` (or `.../tags/<tag>`) in the mirror and stay there. The old tip of a force-pushed branch is kept the same way. Set `on_remote_delete = "prune"` if you'd rather the mirror match the source exactly.
 3. `git fsck` checks that every ref's history is complete. If it isn't, nothing is copied.
 4. rsync copies the mirror to the NAS. Only new files travel, so a small change is a small copy.
@@ -269,7 +278,7 @@ The default excludes cover macOS clutter (`.DS_Store`, `._*`, `Icon\r`, trash an
 | `new_repos` | `prompt` | What happens to a clone that shows up in `scan` later: wait for you to decide in the menu (`prompt`), back it up (`include`), or only mention it (`ignore`). |
 | `on_remote_delete` | `keep` | What the NAS mirror does with a branch or tag deleted at the source: keep it under `refs/deleted/<day>/` (`keep`) or delete it too (`prune`). |
 | `groups` | `{ "*" = "other" }` | Which NAS folder each owner's repos go in. `*` catches the rest. `local` is kept for repos without a GitHub remote. |
-| `gc` | `false` | Run `git gc` on local clones before backing them up. |
+| `helper_repos` | `[]` | Repos the helper on the NAS backs up straight from GitHub, as patterns like `acme/*` or `*/*`. It gets every branch, tag and Git LFS file, and this Mac only sends work GitHub doesn't have yet, which appears as `from-mac/` branches. Mirrors go in `mirrors-v2`. Remove the setting to go back to the Mac doing the backups. |
 
 `[github.keep]` from older versions is no longer used; the checker warns about it, and you can delete it.
 
@@ -290,21 +299,32 @@ When it finds a new repo in your scan folders, the menu asks whether to back it 
 
 Folder backups are plain files on the NAS, so you can copy them back with Finder, your NAS's file manager, `scp` or `rsync`. Older versions are under `_archive/<day>/<time>/` in the same folder, at the same path they had in the source.
 
-A repo's mirror on the NAS is an ordinary git repository, so you clone it back:
+A repo's mirror on the NAS is an ordinary git repository, so you clone it back. `nas-sync mirror` prints the exact commands for each repo:
 
 ```sh
-git clone me@nas.local:/volume1/homes/me/github-backups/mirrors/my-org/app.git app
-swift run nas-sync mirror app       # prints the commands for each matching repo
+swift run nas-sync mirror app
 ```
 
-Cloning over SSH needs git on the NAS. Without it, git stops with `git-upload-pack: command not found`. In that case copy the mirror down with rsync and clone the copy. `nas-sync mirror` prints this command too:
+For a mirror made by the helper, tell git where to find its tools on the NAS:
 
 ```sh
-rsync -rt --rsync-path=/usr/bin/rsync 'me@nas.local:/volume1/homes/me/github-backups/mirrors/my-org/app.git/' 'app.git/'
-git clone app.git
+git clone --upload-pack='PATH=/usr/local/bin:$PATH git-upload-pack' ssh://me@nas.local:5577/volume1/homes/me/github-backups/mirrors-v2/my-org/app.git app
 ```
 
-The clone has every branch and tag as of the last backup. Branches and tags that were deleted or force-pushed at the source are kept under `refs/deleted/`. To see them, clone with `--mirror` and run `git for-each-ref refs/deleted`, or bring them into a normal clone with `git fetch origin 'refs/deleted/*:refs/deleted/*'`. In the Repos window, right-click a repo and choose Copy Mirror Path on NAS.
+To get Git LFS files back too, copy the mirror down, clone the copy and pull the files. This needs `git-lfs` on your Mac:
+
+```sh
+rsync -rt -e 'ssh -p 5577' --rsync-path=/usr/bin/rsync 'me@nas.local:/volume1/homes/me/github-backups/mirrors-v2/my-org/app.git/' 'app.git/'
+git clone "file://$PWD/app.git" app
+cd app
+git lfs install --local
+git lfs fetch --all origin
+git lfs pull
+```
+
+A mirror the app made without the helper has no LFS files, and needs no `--upload-pack` if your NAS's SSH commands can already find git. If git stops with `git-upload-pack: command not found`, use the rsync line and `git clone app.git`.
+
+The clone has every branch and tag as of the last backup. Work that was only on your Mac is in branches and tags named `from-mac/<name>`. Branches and tags that were deleted or force-pushed at the source are kept under `refs/deleted/`. To see them, clone with `--mirror` and run `git for-each-ref refs/deleted`, or bring them into a normal clone with `git fetch origin 'refs/deleted/*:refs/deleted/*'`. In the Repos window, right-click a repo and choose Copy Mirror Path on NAS.
 
 Archives from older versions (`github-backups/bundles/.../*.bundle.xz`) turn back into a repo in two steps:
 
@@ -329,7 +349,7 @@ swift run nas-sync run github --dry-run -v     # show which repos would be backe
 swift run nas-sync mirror [repo]               # where each repo's mirror is on the NAS, and the git clone command
 swift run nas-sync helper status               # the helper on the NAS and its health, changing nothing
 swift run nas-sync helper install              # install or update the helper on the NAS if needed
-swift run nas-sync helper run --only a/b --wait  # back up a repo from GitHub on the NAS, into mirrors-v2
+swift run nas-sync helper run [--only a/b] [--wait]  # back up helper_repos (or just a/b) from GitHub on the NAS, into mirrors-v2
 swift run nas-sync helper report               # the helper's latest run
 ```
 

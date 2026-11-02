@@ -24,6 +24,8 @@ public final class GitHubBackup: @unchecked Sendable {
     public struct RepoResult: Sendable, Codable, Equatable {
         public enum Action: String, Sendable, Codable {
             case backedUp, wouldBackUp, unchanged, failed, skipped
+            /// The NAS helper handles this repo, and this Mac had nothing to send.
+            case onNAS
         }
 
         public var fullName: String
@@ -69,6 +71,8 @@ public final class GitHubBackup: @unchecked Sendable {
     public let git: Git
     /// Asks GitHub whether each repo still exists. Off in tests.
     public var checksGitHub = true
+    /// Starts the NAS helper at the end of a run. Off in tests.
+    public var startsHelperRuns = true
 
     /// Folder inside `dest` that holds the mirrors.
     public static let mirrorsFolder = "mirrors"
@@ -102,6 +106,12 @@ public final class GitHubBackup: @unchecked Sendable {
         "\(dest)/\(mirrorsFolder)/\(mirrorPath)"
     }
 
+    /// Where a repo's mirror is on the NAS, relative to the NAS base folder. Nil before it has one.
+    public static func nasMirrorPath(dest: String, record: RepoRecord) -> String? {
+        guard let path = record.mirrorPath else { return nil }
+        return record.usesHelper ? "\(dest)/\(HelperManifest.mirrorsFolder)/\(path)" : nasMirrorPath(dest: dest, mirrorPath: path)
+    }
+
     /// The folder inside `mirrors` for a repo: its owner's group, or `local` without a GitHub remote.
     func group(for t: RepoTarget) -> String {
         t.hasGitHubRemote ? config.group(forOwner: t.owner) : GitHubConfig.localGroup
@@ -133,6 +143,9 @@ public final class GitHubBackup: @unchecked Sendable {
         try? fm.removeItem(at: tempDirectory)
         try? fm.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         if !dryRun { try? fm.removeItem(at: legacyMirrorDirectory) }
+
+        let helper = NASHelper(nas: nas)
+        let helperProblem = dryRun || config.helperRepos.isEmpty ? nil : prepareHelper(helper)
 
         let (targets, excluded) = RepoDiscovery.targets(config: config)
         let known = Dictionary(store.repos().map { ($0.fullName.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
@@ -176,8 +189,17 @@ public final class GitHubBackup: @unchecked Sendable {
             }
             let started = Date()
             do {
-                var result = try backUp(t, existing: existing, mirrorPath: mirrorPath, dryRun: dryRun, now: now,
+                var result: RepoResult
+                if config.usesHelper(t.fullName), t.hasGitHubRemote {
+                    if let helperProblem {
+                        result = RepoResult(fullName: t.fullName, action: .failed, reason: helperProblem)
+                    } else {
+                        result = try sendToHelper(t, existing: existing, mirrorPath: mirrorPath, dryRun: dryRun, isCancelled: isCancelled, report: report)
+                    }
+                } else {
+                    result = try backUp(t, existing: existing, mirrorPath: mirrorPath, dryRun: dryRun, now: now,
                                         isCancelled: isCancelled, report: report, timings: &timings)
+                }
                 result.seconds = Date().timeIntervalSince(started)
                 results.append(result)
                 repoFinished(result)
@@ -200,6 +222,15 @@ public final class GitHubBackup: @unchecked Sendable {
         record.finished = Date()
         record.stepTimings = timings
         fill(&record, results: results, total: targets.count, dryRun: dryRun)
+        if !dryRun, record.outcome != .cancelled, helperProblem == nil, !config.helperRepos.isEmpty || known.values.contains(where: \.usesHelper) {
+            do {
+                try handOffToHelper(helper)
+            } catch {
+                if record.outcome == .success { record.outcome = .warning }
+                let text = "Couldn't start the NAS helper: \(Self.plain(error))"
+                record.message = record.message.map { "\($0)\n\(text)" } ?? text
+            }
+        }
         if !dryRun, record.outcome != .cancelled || !results.isEmpty {
             writeReport(record: record, results: results, now: now)
         }
@@ -264,6 +295,10 @@ public final class GitHubBackup: @unchecked Sendable {
         record.source = t.source
         record.localPath = t.localPath?.path(percentEncoded: false)
         record.hasGitHubRemote = t.hasGitHubRemote
+        record.usesHelper = false
+        record.pushError = nil
+        record.helperProblem = nil
+        record.helperGone = false
 
         let gone = isGoneFromGitHub(t)
         let refs: [String: String]
@@ -329,10 +364,6 @@ public final class GitHubBackup: @unchecked Sendable {
             let start = Date()
             defer { timings[step.rawValue, default: 0] += Date().timeIntervalSince(start) }
             return try body()
-        }
-
-        if t.source == .localClone, config.gc, let dir = t.localPath {
-            try timed(.checking) { _ = try git.run(["gc", "--quiet"], in: dir, isCancelled: isCancelled) }
         }
 
         let local = cacheDirectory.appending(path: mirrorPath, directoryHint: .isDirectory)
@@ -687,6 +718,7 @@ public final class GitHubBackup: @unchecked Sendable {
         var c = RunCounts()
         c.total = total
         var items: [RunItem] = []
+        var onNAS = 0
         for r in results {
             switch r.action {
             case .backedUp, .wouldBackUp:
@@ -704,6 +736,9 @@ public final class GitHubBackup: @unchecked Sendable {
             case .skipped:
                 c.skipped += 1
                 items.append(RunItem(action: .skipped, path: r.fullName, size: r.size, detail: r.reason))
+            case .onNAS:
+                onNAS += 1
+                items.append(RunItem(action: .unchanged, path: r.fullName, size: r.size, detail: r.reason))
             }
         }
         record.counts = c
@@ -714,6 +749,7 @@ public final class GitHubBackup: @unchecked Sendable {
         var summary: [String] = []
         if c.copied > 0 { summary.append("\(c.copied) \(dryRun ? "would be backed up" : "backed up")") }
         if c.unchanged > 0 { summary.append("\(c.unchanged) unchanged") }
+        if onNAS > 0 { summary.append("\(onNAS) handled by the NAS helper") }
         if c.skipped > 0 { summary.append("\(c.skipped) skipped") }
         if c.failed > 0 { summary.append("\(c.failed) failed") }
         if c.keptRefs > 0 { summary.append(Format.count(c.keptRefs, "deleted ref") + " kept") }

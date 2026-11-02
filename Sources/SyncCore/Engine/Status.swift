@@ -158,6 +158,8 @@ public struct StatusSnapshot: Sendable, Codable, Equatable {
     public var updated: Date
     /// The helper on the NAS, once it has been checked.
     public var helper: HelperReport?
+    /// The helper's latest run, when repos use it.
+    public var helperRun: HelperRunReport?
 
     public static func initial(configPath: String) -> StatusSnapshot {
         StatusSnapshot(state: .starting, wifiName: nil, homeWiFi: nil, isHome: false, locationAllowed: false, nasConnected: false,

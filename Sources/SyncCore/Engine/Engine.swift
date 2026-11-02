@@ -55,18 +55,30 @@ public struct EngineEnvironment: Sendable {
     public var diagnose: @Sendable (NAS, String?, String) -> [NASCheck.Step]
     /// Installs or updates the helper on the NAS and checks its health.
     public var helper: @Sendable (NAS) throws -> HelperReport
+    /// Reads the report of the helper's latest run.
+    public var helperRun: @Sendable (NAS) throws -> HelperRunReport?
+    /// Saves the helper's list of repos and starts a run on the NAS.
+    public var startHelperRun: @Sendable (GitHubConfig, NAS, Store) throws -> Void
 
     public init(
         wifiName: @escaping @Sendable () -> String?, power: @escaping @Sendable () -> PowerState,
         connect: @escaping @Sendable (NAS) -> Result<Void, NAS.ConnectProblem>,
         diagnose: @escaping @Sendable (NAS, String?, String) -> [NASCheck.Step],
-        helper: @escaping @Sendable (NAS) throws -> HelperReport = { try NASHelper(nas: $0).ensure() }
+        helper: @escaping @Sendable (NAS) throws -> HelperReport = { try NASHelper(nas: $0).ensure() },
+        helperRun: @escaping @Sendable (NAS) throws -> HelperRunReport? = { try NASHelper(nas: $0).lastRun() },
+        startHelperRun: @escaping @Sendable (GitHubConfig, NAS, Store) throws -> Void = { config, nas, store in
+            let helper = NASHelper(nas: nas)
+            try helper.save(HelperManifest.build(config: config, nas: nas, store: store))
+            try helper.startRun()
+        }
     ) {
         self.wifiName = wifiName
         self.power = power
         self.connect = connect
         self.diagnose = diagnose
         self.helper = helper
+        self.helperRun = helperRun
+        self.startHelperRun = startHelperRun
     }
 
     public static let live = EngineEnvironment(
@@ -130,6 +142,12 @@ public final class Engine {
     @ObservationIgnored var checksHelperOnLocalFolder = false
     /// How often the helper is checked while connected.
     static let helperRecheck: TimeInterval = 3600
+    @ObservationIgnored private var readingHelperRun = false
+    @ObservationIgnored private var lastHelperRunRead: Date?
+    @ObservationIgnored private var helperRunRequested: Date?
+    /// How often the helper's report is read: while a run is going or was just asked for, and otherwise.
+    static let helperRunActiveRead: TimeInterval = 60
+    static let helperRunIdleRead: TimeInterval = 900
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
     @ObservationIgnored private var configFolderSource: DispatchSourceFileSystemObject?
@@ -259,7 +277,9 @@ public final class Engine {
             status.nasConnected = false
             status.lastConnectCheck = nil
             lastHelperCheck = nil
+            lastHelperRunRead = nil
             status.helper = nil
+            status.helperRun = nil
         }
         status.nasLocation = new.nas.ssh.map { "\($0):\(new.nas.path)" } ?? new.nas.path
         status.homeWiFi = new.home.wifi
@@ -481,6 +501,7 @@ public final class Engine {
         }
         if let config, let nas, isHome, status.pausedUntil == nil { checkConnectionIfNeeded(nas, config: config, now: now) }
         if let config, let nas, isHome, status.nasConnected, status.pausedUntil == nil {
+            readHelperRunIfDue(now: now)
             startDueJobs(config, nas: nas, power: power, now: now)
         }
         refreshJobs(now: now, power: power)
@@ -581,7 +602,7 @@ public final class Engine {
             status.helper = report
             let problem = report.state == .failed || report.state == .appTooOld ? report.error ?? report.state.rawValue : nil
             if report.change != nil || (problem != nil && problem != lastHelperProblem), let run = report.runRecord(started: started) {
-                _ = try? store.saveRun(run)
+                store.saveHelperChange(run)
                 historyVersion += 1
             }
             lastHelperProblem = problem
@@ -590,6 +611,90 @@ public final class Engine {
             lastHelperCheck = nil
         }
         publish()
+    }
+
+    /// Saves the list of repos and starts a helper run on the NAS.
+    public func runHelperNow() {
+        guard let gh = config?.github, let nas else { return }
+        helperRunRequested = Date()
+        lastHelperRunRead = Date()
+        let env = self.env, store = self.store
+        Task.detached(priority: .utility) { [weak self] in
+            var failure: String?
+            do {
+                try env.startHelperRun(gh, nas, store)
+            } catch {
+                failure = "\(error)"
+            }
+            await MainActor.run { [failure] in self?.helperRunStarted(failure: failure) }
+        }
+    }
+
+    private func helperRunStarted(failure: String?) {
+        if let failure {
+            helperRunRequested = nil
+            let now = Date()
+            _ = try? store.saveRun(RunRecord(kind: .helper, job: "", trigger: "manual", started: now, finished: now, outcome: .failed,
+                                             summary: "Couldn't start the NAS helper", message: failure))
+            historyVersion += 1
+        }
+        readHelperRun()
+    }
+
+    private func readHelperRunIfDue(now: Date) {
+        guard config?.github?.helperRepos.isEmpty == false else {
+            status.helperRun = nil
+            return
+        }
+        guard nas?.isRemote == true || checksHelperOnLocalFolder else { return }
+        let requested = helperRunRequested.map { now.timeIntervalSince($0) < 600 } ?? false
+        let active = requested || status.helperRun?.isFinished == false
+        if let last = lastHelperRunRead, now.timeIntervalSince(last) < (active ? Self.helperRunActiveRead : Self.helperRunIdleRead) { return }
+        readHelperRun()
+    }
+
+    private func readHelperRun() {
+        guard !readingHelperRun, let nas else { return }
+        readingHelperRun = true
+        lastHelperRunRead = Date()
+        let env = self.env
+        Task.detached(priority: .utility) { [weak self] in
+            let report = try? env.helperRun(nas)
+            await MainActor.run { self?.helperRunRead(report) }
+        }
+    }
+
+    private func helperRunRead(_ result: HelperRunReport??) {
+        readingHelperRun = false
+        guard let result, let report = result else { return }
+        status.helperRun = report
+        defer { publish() }
+        // A backup run has its own copies of the repo records and would overwrite these changes. It reads the report itself.
+        guard running[Self.githubJob] == nil, let gh = config?.github else { return }
+        GitHubBackup.applyHelperRun(report, config: gh, store: store)
+        historyVersion += 1
+        guard report.isFinished, let started = report.started, store.date(StoreKey.helperRunSeen) != started else { return }
+        store.setDate(started, for: StoreKey.helperRunSeen)
+        helperRunRequested = nil
+        recordHelperRun(report)
+        // Clones the helper has just made a mirror for can now send their work.
+        let waiting = store.repos().contains { $0.usesHelper && $0.source == .localClone && $0.status == .ok && $0.macFingerprint == nil }
+        if waiting { backUpReposNow() }
+    }
+
+    /// Activity gets an entry when something changed or a different set of repos failed, not for every quiet hourly run.
+    private func recordHelperRun(_ report: HelperRunReport) {
+        let failed = report.failedRepos.map(\.name).sorted()
+        let before = Engine.readList(store.value(StoreKey.helperRunFailed))
+        let record = report.runRecord()
+        guard record.counts.copied > 0 || failed != before.sorted() else { return }
+        store.setValue(failed.isEmpty ? nil : failed.joined(separator: "\n"), for: StoreKey.helperRunFailed)
+        _ = try? store.saveRun(record)
+        let newlyFailed = failed.filter { !before.contains($0) }
+        if let first = newlyFailed.first {
+            notify("helper-run-\(record.started.timeIntervalSince1970)", "\(Format.count(newlyFailed.count, "repo")) failed to back up on the NAS",
+                   newlyFailed.count == 1 ? first : "\(first) and \(newlyFailed.count - 1) more. Open Repos for details.")
+        }
     }
 
     private func startDueJobs(_ config: AppConfig, nas: NAS, power: PowerState, now: Date) {
@@ -701,6 +806,10 @@ public final class Engine {
     private func finished(_ job: String, record: RunRecord?, requeue: FolderSync.Scope?) {
         running[job] = nil
         progress[job] = nil
+        if job == Self.githubJob, config?.github?.helperRepos.isEmpty == false {
+            helperRunRequested = Date()
+            lastHelperRunRead = nil
+        }
         if record?.outcome == .blocked, record?.summary.hasPrefix("Stopped:") == true { awaitingDeleteConfirmation.insert(job) } else if record != nil { awaitingDeleteConfirmation.remove(job) }
         if record?.outcome == .failed { retryAfter[job] = Date().addingTimeInterval(Self.failureBackoff) } else { retryAfter[job] = nil }
         if record?.outcome == .failed { status.lastConnectCheck = nil }
@@ -764,6 +873,7 @@ public final class Engine {
         } else {
             status.github = nil
             status.helper = nil
+            status.helperRun = nil
         }
         status.jobs = jobs
         for j in jobs { noteHealth(j) }

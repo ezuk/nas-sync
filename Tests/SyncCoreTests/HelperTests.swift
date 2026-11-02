@@ -6,6 +6,8 @@ import Testing
 private let releasedHelpers = [
     1: "b4df6ae1131c96d02e38caadd5c12cc8fdc970ae75c5c48babfdf1511ce5056c",
     2: "8d8605de4f47203070189a2d83dc110ee52b8aadbcbfb08e61f5caf3206f357a",
+    3: "2547dfa182ccc94274eaaa0faa38bbfd41f0b486ab07c0ed4381a5352034e421",
+    4: "352adc377befdd16f826938447e3c6fffa732d6e29a3ed36259f505940711bb7",
 ]
 
 /// A local folder standing in for the NAS.

@@ -247,9 +247,11 @@ private final class HelperWorld {
         try w.manifest(["app"])
         _ = try w.run()
         let mirror = w.mirror("app")
-        let tip = try w.sha("refs/heads/main", in: mirror)
-        try w.git.run(["update-ref", "refs/heads/from-mac/idea", tip], in: mirror)
-        try w.git.run(["update-ref", "refs/tags/from-mac/v9", tip], in: mirror)
+        try w.git.run(["checkout", "--quiet", "-b", "idea"], in: w.copy("app"))
+        try w.commit("app", "not on GitHub")
+        let tip = try w.sha("HEAD", in: w.copy("app"))
+        try w.git.run(["push", "--quiet", mirror.path(percentEncoded: false), "idea:refs/heads/from-mac/idea", "idea:refs/tags/from-mac/v9"], in: w.copy("app"))
+        try w.git.run(["checkout", "--quiet", "main"], in: w.copy("app"))
 
         #expect(try w.result("app", try w.run()).action == "unchanged")
         try w.commit("app", "more")
@@ -317,9 +319,13 @@ private final class HelperWorld {
         var known = RepoRecord(fullName: "acme/old", source: .remoteOnly, localPath: nil, firstSeen: Date(), hasGitHubRemote: true)
         known.mirrorPath = "acme/renamed.git"
         try store.saveRepo(known)
-        let config = GitHubConfig(every: Interval(seconds: 86400), around: nil, staleAfter: Interval(seconds: 172800), dest: "gh",
+        var config = GitHubConfig(every: Interval(seconds: 86400), around: nil, staleAfter: Interval(seconds: 172800), dest: "gh",
                                   scan: [], newRepos: .prompt, exclude: ["acme/skip"], remoteOnly: ["acme/old", "acme/app", "acme/skip"],
-                                  groups: ["*": "other", "acme": "acme"], gc: false, line: 0)
+                                  groups: ["*": "other", "acme": "acme"], line: 0)
+        #expect(HelperManifest.build(config: config, nas: w.nas, store: store).repos.isEmpty, "no repo uses the helper until helper_repos says so")
+        config.helperRepos = ["acme/old"]
+        #expect(HelperManifest.build(config: config, nas: w.nas, store: store).repos.map(\.name) == ["acme/old"])
+        config.helperRepos = ["*/*"]
 
         let all = HelperManifest.build(config: config, nas: w.nas, store: store)
         #expect(all.mirrors == w.nas.absolute("gh/mirrors-v2"))
@@ -328,8 +334,338 @@ private final class HelperWorld {
         #expect(all.repos[0].path == "acme/renamed.git")
         #expect(all.repos[1].url == "https://github.com/acme/app.git")
         #expect(all.repos[1].path == "acme/app.git")
+        #expect(all.repos[1].source == "remote")
+        #expect(all.repos[1].legacy == w.nas.absolute("gh/mirrors/acme/app.git"))
 
         let one = HelperManifest.build(config: config, nas: w.nas, store: store, only: ["ACME/app"])
         #expect(one.repos.map(\.name) == ["acme/app"])
+    }
+
+    // MARK: Old mirrors and work from a Mac
+
+    /// A copy of the repo's GitHub state with extra local work, standing in for the app's old mirror.
+    private func makeLegacy(_ w: HelperWorld, _ name: String) throws -> URL {
+        let legacy = w.root.appending(path: "nas/old/\(name).git")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try w.git.run(["init", "--bare", "--quiet", "-b", "main"], in: legacy)
+        try w.git.run(["push", "--quiet", legacy.path(percentEncoded: false), "main"], in: w.copy(name))
+        return legacy
+    }
+
+    private func manifest(_ w: HelperWorld, _ name: String, legacy: URL?, source: String) throws {
+        let repo = HelperManifest.Repo(name: "owner/\(name)", url: w.github.appending(path: "\(name).git").path(percentEncoded: false), path: "\(name).git",
+                                       legacy: legacy?.path(percentEncoded: false), source: source)
+        try w.helper.save(HelperManifest(mirrors: w.mirrors.path(percentEncoded: false), onRemoteDelete: "keep", repos: [repo]))
+    }
+
+    /// Pushes a branch from the working copy into `refs/mac/` the way the app does.
+    private func macPush(_ w: HelperWorld, _ name: String) throws {
+        try w.git.run(["push", "--quiet", "--prune", w.mirror(name).path(percentEncoded: false),
+                       "+refs/heads/*:refs/mac/heads/*", "+refs/tags/*:refs/mac/tags/*"], in: w.copy(name))
+    }
+
+    @Test func adoptsTheOldMirrorOfAClone() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        let legacy = try makeLegacy(w, "app")
+        try w.git.run(["checkout", "--quiet", "-b", "local-only"], in: w.copy("app"))
+        try w.commit("app", "only on the Mac")
+        let local = try w.sha("HEAD", in: w.copy("app"))
+        try w.git.run(["push", "--quiet", legacy.path(percentEncoded: false), "local-only", "HEAD:refs/deleted/2020-01-01/heads/old"], in: w.copy("app"))
+        try manifest(w, "app", legacy: legacy, source: "clone")
+
+        let repo = try w.result("app", w.run())
+        #expect(repo.fromMac == 1)
+        let mirror = w.mirror("app")
+        #expect(try w.refs("refs/heads", in: mirror) == ["refs/heads/from-mac/local-only", "refs/heads/main"], "main is on GitHub, so only the local branch is listed separately")
+        #expect(try w.sha("refs/heads/from-mac/local-only", in: mirror) == local)
+        #expect(try w.refs("refs/deleted", in: mirror) == ["refs/deleted/2020-01-01/heads/old"])
+        #expect(try w.refs("refs/legacy", in: mirror).isEmpty)
+    }
+
+    @Test func oldMirrorBranchesOfARemoteRepoCountAsDeletedAtTheSource() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        let legacy = try makeLegacy(w, "app")
+        try w.git.run(["checkout", "--quiet", "-b", "gone"], in: w.copy("app"))
+        try w.commit("app", "deleted on GitHub since")
+        try w.git.run(["push", "--quiet", legacy.path(percentEncoded: false), "gone"], in: w.copy("app"))
+        try manifest(w, "app", legacy: legacy, source: "remote")
+
+        _ = try w.run()
+        let mirror = w.mirror("app")
+        #expect(try w.refs("refs/heads", in: mirror) == ["refs/heads/main"])
+        #expect(try w.refs("refs/deleted", in: mirror).count == 1)
+    }
+
+    @Test func oldMirrorStaysVisibleWhenGitHubCantBeRead() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        let legacy = try makeLegacy(w, "app")
+        try FileManager.default.removeItem(at: w.github.appending(path: "app.git"))
+        try manifest(w, "app", legacy: legacy, source: "remote")
+
+        let repo = try w.result("app", w.run())
+        #expect(repo.action == "failed")
+        #expect(try w.refs("refs/heads", in: w.mirror("app")) == ["refs/heads/from-mac/main"])
+    }
+
+    @Test func sortsWhatAMacSends() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        try manifest(w, "app", legacy: nil, source: "clone")
+        _ = try w.run()
+        let mirror = w.mirror("app")
+
+        // A branch GitHub lacks shows up, and main, which GitHub has, doesn't.
+        try w.git.run(["checkout", "--quiet", "-b", "wip"], in: w.copy("app"))
+        try w.commit("app", "one")
+        try macPush(w, "app")
+        #expect(try w.result("app", w.run()).fromMac == 1)
+        #expect(try w.refs("refs/heads", in: mirror) == ["refs/heads/from-mac/wip", "refs/heads/main"])
+        let first = try w.sha("HEAD", in: w.copy("app"))
+        #expect(try w.sha("refs/heads/from-mac/wip", in: mirror) == first)
+
+        // A rewrite moves the branch and keeps the old commit.
+        try w.git.run(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet", "--amend", "--allow-empty", "-m", "two"], in: w.copy("app"))
+        try macPush(w, "app")
+        _ = try w.run()
+        #expect(try w.sha("refs/heads/from-mac/wip", in: mirror) == w.sha("HEAD", in: w.copy("app")))
+        let kept = try w.refs("refs/deleted", in: mirror)
+        #expect(kept.count == 1)
+        #expect(try w.sha(kept[0], in: mirror) == first)
+
+        // Once GitHub has it, the separate copy goes, with nothing more kept.
+        try w.git.run(["push", "--quiet", "origin", "wip"], in: w.copy("app"))
+        _ = try w.run()
+        #expect(try w.refs("refs/heads", in: mirror) == ["refs/heads/main", "refs/heads/wip"])
+        #expect(try w.refs("refs/deleted", in: mirror).count == 1)
+    }
+
+    @Test func aBranchDeletedOnTheMacIsKept() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        try manifest(w, "app", legacy: nil, source: "clone")
+        _ = try w.run()
+        try w.git.run(["checkout", "--quiet", "-b", "wip"], in: w.copy("app"))
+        try w.commit("app", "one")
+        let tip = try w.sha("HEAD", in: w.copy("app"))
+        try macPush(w, "app")
+        _ = try w.run()
+
+        try w.git.run(["checkout", "--quiet", "main"], in: w.copy("app"))
+        try w.git.run(["branch", "--quiet", "-D", "wip"], in: w.copy("app"))
+        try macPush(w, "app")
+        let repo = try w.result("app", w.run())
+        let mirror = w.mirror("app")
+        #expect(repo.fromMac == 0)
+        #expect(try w.refs("refs/heads", in: mirror) == ["refs/heads/main"])
+        let kept = try w.refs("refs/deleted", in: mirror)
+        #expect(kept.count == 1)
+        #expect(try w.sha(kept[0], in: mirror) == tip)
+    }
+
+    @Test func aQuietRunDoesNoSorting() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        try manifest(w, "app", legacy: nil, source: "clone")
+        _ = try w.run()
+        try w.git.run(["checkout", "--quiet", "-b", "wip"], in: w.copy("app"))
+        try w.commit("app", "one")
+        try macPush(w, "app")
+        #expect(try w.result("app", w.run()).action == "changed")
+        let repo = try w.result("app", w.run())
+        #expect(repo.action == "unchanged")
+        #expect(repo.fromMac == 1)
+    }
+
+    @Test func lfsOnlyLooksAtGitHubRefs() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        try manifest(w, "app", legacy: nil, source: "clone")
+        _ = try w.run()
+        try w.git.run(["checkout", "--quiet", "-b", "wip"], in: w.copy("app"))
+        try w.commit("app", "never pushed to GitHub")
+        try macPush(w, "app")
+        try w.git.run(["checkout", "--quiet", "main"], in: w.copy("app"))
+        try w.commit("app", "on GitHub")
+        try w.git.run(["push", "--quiet", "origin", "main"], in: w.copy("app"))
+        _ = try w.run()
+        let log = try String(contentsOf: w.lfsLog, encoding: .utf8)
+        #expect(log.contains("refs/heads/main"))
+        #expect(!log.contains("wip"))
+    }
+
+    // MARK: The whole path
+
+    /// Runs the Mac's backup, then the helper with GitHub replaced by the local bare repos.
+    private func macThenHelper(_ w: HelperWorld, _ backup: GitHubBackup) throws -> GitHubBackup.Result {
+        let result = backup.run(trigger: "test")
+        let manifestFile = w.nas.absolute("\(NASHelper.stateFolder)/manifest.json")
+        var manifest = try JSONDecoder().decode(HelperManifest.self, from: Data(contentsOf: URL(filePath: manifestFile)))
+        manifest.repos = manifest.repos.map {
+            var repo = $0
+            repo.url = w.github.appending(path: "\($0.name.split(separator: "/")[1]).git").path(percentEncoded: false)
+            return repo
+        }
+        try w.helper.save(manifest)
+        _ = try w.run()
+        return result
+    }
+
+    @Test func aCloneSendsItsWorkWithoutBeingChanged() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        let clone = w.copy("app")
+        try w.git.run(["remote", "set-url", "--push", "origin", "https://github.com/owner/app.git"], in: clone)
+        try w.git.run(["config", "remote.origin.url", "https://github.com/owner/app.git"], in: clone)
+        try w.git.run(["checkout", "--quiet", "-b", "wip"], in: clone)
+        try w.commit("app", "not pushed")
+        let tip = try w.sha("HEAD", in: clone)
+        let hook = clone.appending(path: ".git/hooks/pre-push")
+        try Data("#!/bin/sh\ntouch '\(w.root.path(percentEncoded: false))/hook-ran'\nexit 1\n".utf8).write(to: hook)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path(percentEncoded: false))
+
+        let store = try Store(directory: w.root.appending(path: "state"))
+        var config = GitHubConfig(every: Interval(seconds: 86400), around: nil, staleAfter: Interval(seconds: 172800), dest: "gh",
+                                  scan: [w.work], newRepos: .include, exclude: [], remoteOnly: [],
+                                  groups: ["*": "other"], line: 0)
+        config.helperRepos = ["owner/*"]
+        let backup = GitHubBackup(config: config, nas: w.nas, store: store, workDirectory: w.root.appending(path: "cache"))
+        backup.checksGitHub = false
+        backup.startsHelperRuns = false
+        let before = try w.git.run(["for-each-ref"], in: clone) + String(contentsOf: clone.appending(path: ".git/config"), encoding: .utf8)
+        let mirror = w.root.appending(path: "nas/gh/mirrors-v2/other/app.git")
+
+        // First run: nothing is sent until the helper has made the mirror.
+        let first = try macThenHelper(w, backup)
+        #expect(first.repos.map(\.action) == [.onNAS])
+        #expect(first.record.summary == "1 handled by the NAS helper")
+        #expect(FileManager.default.fileExists(atPath: mirror.appending(path: "HEAD").path(percentEncoded: false)))
+        #expect(try w.refs("refs/mac", in: mirror).isEmpty)
+        GitHubBackup.applyHelperRun(try #require(try w.helper.lastRun()), config: config, store: store)
+        var record = try #require(store.repos().first)
+        #expect(record.usesHelper)
+        #expect(record.mirrorUpdated != nil)
+        #expect(record.macFingerprint == nil)
+        #expect(GitHubBackup.nasMirrorPath(dest: "gh", record: record) == "gh/mirrors-v2/other/app.git")
+
+        // Second run: the clone's work goes across and shows up as a branch.
+        let second = try macThenHelper(w, backup)
+        #expect(second.repos.map(\.action) == [.backedUp])
+        #expect(try w.sha("refs/heads/from-mac/wip", in: mirror) == tip)
+        #expect(try w.refs("refs/heads", in: mirror).contains("refs/heads/main"))
+
+        // Nothing new: nothing is sent.
+        #expect(backup.run(trigger: "test").repos.map(\.action) == [.onNAS])
+
+        // The clone is exactly as it was, and its hooks didn't run.
+        #expect(try w.git.run(["for-each-ref"], in: clone) + String(contentsOf: clone.appending(path: ".git/config"), encoding: .utf8) == before)
+        #expect(!FileManager.default.fileExists(atPath: w.root.appending(path: "hook-ran").path(percentEncoded: false)))
+
+        // Removing the setting goes back to the old mirror, which the helper's mirror doesn't affect.
+        config.helperRepos = []
+        let old = GitHubBackup(config: config, nas: w.nas, store: store, workDirectory: w.root.appending(path: "cache"))
+        old.checksGitHub = false
+        #expect(old.run(trigger: "test").repos.map(\.action) == [.backedUp])
+        record = try #require(store.repos().first)
+        #expect(!record.usesHelper)
+        #expect(GitHubBackup.nasMirrorPath(dest: "gh", record: record) == "gh/mirrors/other/app.git")
+        #expect(try w.sha("refs/heads/wip", in: w.root.appending(path: "nas/gh/mirrors/other/app.git")) == tip)
+        #expect(try w.sha("refs/heads/from-mac/wip", in: mirror) == tip)
+    }
+
+    @Test func aHelperFailureShowsOnTheRepo() throws {
+        let w = try HelperWorld()
+        let store = try Store(directory: w.root.appending(path: "state"))
+        var record = RepoRecord(fullName: "owner/app", source: .remoteOnly, localPath: nil, firstSeen: Date())
+        record.mirrorPath = "other/app.git"
+        try store.saveRepo(record)
+        var config = GitHubConfig(every: Interval(seconds: 86400), around: nil, staleAfter: Interval(seconds: 172800), dest: "gh",
+                                  scan: [], newRepos: .include, exclude: [], remoteOnly: ["owner/app"], groups: ["*": "other"], line: 0)
+        func report(action: String, detail: String? = nil, gone: Bool? = nil) -> HelperRunReport {
+            let repo = HelperRunReport.Repo(name: "owner/app", action: action, detail: detail, bytes: 2048, gone: gone)
+            return HelperRunReport(status: "finished", finished: Date(), repos: [repo])
+        }
+
+        GitHubBackup.applyHelperRun(report(action: "failed", detail: "nope"), config: config, store: store)
+        #expect(try #require(store.repos().first).usesHelper == false, "a repo not in helper_repos is left alone")
+
+        config.helperRepos = ["*/*"]
+        GitHubBackup.applyHelperRun(report(action: "failed", detail: "nope"), config: config, store: store)
+        var r = try #require(store.repos().first)
+        #expect(r.status == .failed)
+        #expect(r.message == "nope")
+        #expect(r.sizeOnNAS == 2048)
+
+        GitHubBackup.applyHelperRun(report(action: "failed", detail: "repository not found", gone: true), config: config, store: store)
+        r = try #require(store.repos().first)
+        #expect(r.status == .goneFromGitHub)
+
+        GitHubBackup.applyHelperRun(report(action: "unchanged"), config: config, store: store)
+        r = try #require(store.repos().first)
+        #expect(r.status == .ok)
+        #expect(r.message == nil)
+    }
+
+    @Test func helperReposSettingIsReadAndOldGCSettingIsIgnored() throws {
+        let text = """
+        [nas]
+        path = "/tmp/nas"
+
+        [home]
+        wifi = "Home"
+
+        [github]
+        helper_repos = ["acme/*", "other/one"]
+        gc = true
+        """
+        let parsed = ConfigLoader.parse(text)
+        #expect(parsed.errors.isEmpty, "\(parsed.errors)")
+        let github = try #require(parsed.config?.github)
+        #expect(github.helperRepos == ["acme/*", "other/one"])
+        #expect(github.usesHelper("acme/app"))
+        #expect(github.usesHelper("Other/One"))
+        #expect(!github.usesHelper("other/two"))
+        #expect(!github.usesHelper("no-remote"))
+        var all = github
+        all.helperRepos = ["*/*"]
+        #expect(all.usesHelper("anyone/anything"))
+        #expect(!all.usesHelper("no-remote"))
+    }
+
+    @Test func aCloneNamedInRemoteOnlyCountsAsListed() throws {
+        let w = try HelperWorld()
+        try w.makeRepo("app")
+        try w.git.run(["config", "remote.origin.url", "https://github.com/owner/app.git"], in: w.copy("app"))
+        let config = GitHubConfig(every: Interval(seconds: 86400), around: nil, staleAfter: Interval(seconds: 172800), dest: "gh",
+                                  scan: [w.work], newRepos: .prompt, exclude: [], remoteOnly: ["Owner/App"], groups: ["*": "other"], line: 0)
+        let targets = RepoDiscovery.targets(config: config).targets
+        #expect(targets.count == 1)
+        #expect(targets[0].source == .localClone)
+        #expect(targets[0].isListed)
+    }
+
+    @Test func aRunSummaryForActivity() {
+        let repos = [HelperRunReport.Repo(name: "a/b", action: "changed"), HelperRunReport.Repo(name: "a/c", action: "unchanged"),
+                     HelperRunReport.Repo(name: "a/d", action: "failed", detail: "no token")]
+        let run = HelperRunReport(status: "finished", started: Date(), finished: Date(), total: 3, repos: repos).runRecord()
+        #expect(run.kind == .helper)
+        #expect(run.summary == "1 updated, 1 unchanged, 1 failed")
+        #expect(run.outcome == .warning)
+        #expect(run.message == "a/d: no token")
+    }
+
+    @Test func reportsWhenScheduledRunsStop() {
+        let now = Date()
+        func finished(_ age: TimeInterval) -> HelperRunReport {
+            HelperRunReport(status: "finished", started: now.addingTimeInterval(-age), finished: now.addingTimeInterval(-age), repos: [])
+        }
+        #expect(Diagnosis.forHelperRun(nil, now: now) == nil)
+        #expect(Diagnosis.forHelperRun(finished(3600), now: now) == nil)
+        #expect(Diagnosis.forHelperRun(finished(4 * 3600), now: now)?.title == "The NAS helper hasn't run lately")
+        let running = { (age: TimeInterval) in HelperRunReport(status: "running", started: now.addingTimeInterval(-age), repos: []) }
+        #expect(Diagnosis.forHelperRun(running(4 * 3600), now: now) == nil, "a first backup can take many hours")
+        #expect(Diagnosis.forHelperRun(running(25 * 3600), now: now)?.title == "The NAS helper's run looks stuck")
     }
 }

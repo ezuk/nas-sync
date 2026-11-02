@@ -39,6 +39,8 @@ public final class NAS: Sendable {
     }
 
     public var isRemote: Bool { config.ssh != nil }
+    /// Puts git's tools on the NAS's PATH, which a non-login SSH session doesn't have.
+    static let gitPathOnNAS = "PATH=/usr/local/bin:/var/packages/git/target/bin:$PATH"
 
     /// Absolute path on the NAS.
     public func absolute(_ rel: String) -> String {
@@ -242,6 +244,12 @@ public final class NAS: Sendable {
     }
 
     /// An rsync command that copies the folder `rel` on the NAS into `folder`, for getting a git mirror back from a NAS without git.
+    /// `git clone` for a mirror made by the helper. Git is on the NAS but not on the PATH of an SSH command.
+    public func helperCloneCommand(_ rel: String, to folder: String) -> String {
+        guard isRemote else { return "git clone \(gitCloneURL(rel)) \(Self.quote(folder))" }
+        return "git clone --upload-pack=\(Self.quote("\(Self.gitPathOnNAS) git-upload-pack")) \(gitCloneURL(rel)) \(Self.quote(folder))"
+    }
+
     public func copyDownCommand(_ rel: String, to folder: String) -> String {
         let path = absolute(rel) + "/"
         let target = Self.quote(folder + "/")

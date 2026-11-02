@@ -144,7 +144,8 @@ public struct GitHubConfig: Sendable, Equatable {
     /// Owner to folder name in file order, with the owner's original case.
     public var groupList: [(owner: String, folder: String)] = []
     public var onRemoteDelete: OnRemoteDelete = .keep
-    public var gc: Bool
+    /// Repos the NAS helper backs up from GitHub, as patterns like `acme/*` or `*/*`.
+    public var helperRepos: [String] = []
     public var line: Int
     /// Line of each `exclude` entry and `remote_only` entry, for linking from the UI.
     public var excludeLine: Int?
@@ -157,11 +158,18 @@ public struct GitHubConfig: Sendable, Equatable {
         a.enabled == b.enabled && a.every == b.every && a.around == b.around && a.staleAfter == b.staleAfter && a.dest == b.dest
             && a.scan == b.scan && a.repos == b.repos && a.newRepos == b.newRepos && a.exclude == b.exclude && a.remoteOnly == b.remoteOnly
             && a.groups == b.groups && a.groupList.map { "\($0.owner)=\($0.folder)" } == b.groupList.map { "\($0.owner)=\($0.folder)" }
-            && a.onRemoteDelete == b.onRemoteDelete && a.gc == b.gc && a.line == b.line && a.excludeLine == b.excludeLine
+            && a.onRemoteDelete == b.onRemoteDelete && a.helperRepos == b.helperRepos && a.line == b.line && a.excludeLine == b.excludeLine
             && a.remoteOnlyLine == b.remoteOnlyLine
     }
 
     public var excludeSet: GlobSet { GlobSet(exclude) }
+
+    /// True when the NAS helper backs up this GitHub repo, instead of this Mac.
+    public func usesHelper(_ fullName: String) -> Bool {
+        guard fullName.contains("/") else { return false }
+        let globs = GlobSet(helperRepos)
+        return globs.matches(fullName) || globs.matches(fullName.lowercased())
+    }
 
     public func group(forOwner owner: String) -> String {
         groups[owner.lowercased()] ?? groups["*"] ?? "other"
@@ -369,7 +377,6 @@ struct ConfigDecoder {
                 exclude: gh.stringList("exclude", default: [], in: &issues),
                 remoteOnly: remoteOnly,
                 groups: groups,
-                gc: gh.bool("gc", default: false, in: &issues),
                 line: gh.table.line,
                 excludeLine: gh.line("exclude"),
                 remoteOnlyLine: gh.line("remote_only")
@@ -378,6 +385,9 @@ struct ConfigDecoder {
             settings.repos = repoPaths.map(expand)
             settings.groupList = groupList
             settings.onRemoteDelete = onDelete ?? .keep
+            settings.helperRepos = gh.stringList("helper_repos", default: [], in: &issues)
+            // No longer used. Configs written by older versions may still set it.
+            _ = gh.bool("gc", default: false, in: &issues)
             githubSettings = settings
             if enabled { github = settings }
         }

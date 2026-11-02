@@ -418,7 +418,7 @@ struct RunDetailView: View {
                 }
             }
             footer(remaining: (interesting.count + unchanged.count) - shown.count,
-                   revealPath: model.engine.config?.github.map { "\($0.dest)/\(GitHubBackup.mirrorsFolder)" })
+                   revealPath: model.engine.config?.github.map { "\($0.dest)/\($0.helperRepos.isEmpty ? GitHubBackup.mirrorsFolder : HelperManifest.mirrorsFolder)" })
             if showTimings, !run.stepTimings.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(run.stepTimings.sorted { $0.value > $1.value }, id: \.key) { step, secs in

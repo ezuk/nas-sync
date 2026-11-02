@@ -20,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 
-HELPER_VERSION = 2
+HELPER_VERSION = 4
 PROTOCOL = 1
 
 MIN_PYTHON = (3, 8)
@@ -42,11 +42,17 @@ FETCH_TIMEOUT = 6 * 3600
 QUICK_TIMEOUT = 300
 # Branches and tags under these names hold work sent from a Mac. GitHub's refs never touch them.
 MAC_PREFIXES = ("refs/heads/from-mac/", "refs/tags/from-mac/")
+# What a Mac has pushed, and what was copied from the app's old mirror. Both are sorted into from-mac/ or refs/deleted/.
+MAC_REFS = "refs/mac/"
+LEGACY_REFS = "refs/legacy/"
+NOT_ON_GITHUB = ["--exclude=refs/mac/*", "--exclude=refs/legacy/*", "--exclude=refs/deleted/*", "--exclude=refs/heads/from-mac/*",
+                 "--exclude=refs/tags/from-mac/*", "--exclude=refs/stash", "--all"]
 DELETED_PREFIX = "refs/deleted/"
 MIRROR_STATE = "nas-sync-state.json"
 # Mirrors with more than this many packs or loose objects get repacked. Nothing is dropped.
 TIDY_PACKS = 30
 TIDY_LOOSE = 5000
+LFS_MAX_NAMED_REFS = 4000
 
 
 def fingerprint(path=SCRIPT):
@@ -231,10 +237,20 @@ def token_file(owner):
     return None
 
 
+def token_files():
+    try:
+        return sorted(os.path.join(STATE, n) for n in os.listdir(STATE) if n.startswith("github-token-"))
+    except OSError:
+        return []
+
+
 def repo_env(name, url):
-    """Git's environment for a repo. Holds the token file's path, never the token."""
+    return env_with_token(token_file(name.split("/")[0]) if url.startswith("https://github.com/") else None)
+
+
+def env_with_token(path):
+    """Git's environment for a token file. Holds the file's path, never the token."""
     env = dict(TOOL_ENV)
-    path = token_file(name.split("/")[0]) if url.startswith("https://github.com/") else None
     if path:
         quoted = "'" + path.replace("'", "'\\''") + "'"
         credential = ('!f() { test "$1" = get && echo username=x-access-token && '
@@ -281,6 +297,25 @@ def parse_refs(text):
 def github_refs(url, env):
     out = git_ok(["ls-remote", "--heads", "--tags", url], env, step="reading branches from GitHub")
     return {ref: sha for ref, sha in parse_refs(out).items() if not is_mac_ref(ref)}
+
+
+def read_github(name, url, env):
+    """Returns GitHub's refs and the environment that could read them. A repo moved to another account
+    can only be read with that account's token, so the other tokens are tried after a refusal."""
+    try:
+        return github_refs(url, env), env
+    except RepoFailure as failure:
+        if not url.startswith("https://github.com/"):
+            raise
+        tried = token_file(name.split("/")[0])
+        for path in token_files():
+            if path != tried:
+                other = env_with_token(path)
+                try:
+                    return github_refs(url, other), other
+                except RepoFailure:
+                    pass
+        raise failure
 
 
 def github_default_branch(url, env):
@@ -332,6 +367,7 @@ def prepare_mirror(mirror, url, env):
         git_ok(["init", "--bare", "--quiet", "."], env, cwd=mirror)
     # Git must never clean up by itself: objects only reachable from kept refs have to stay.
     git_ok(["config", "gc.auto", "0"], env, cwd=mirror)
+    git_ok(["config", "receive.autogc", "false"], env, cwd=mirror)
     git_ok(["config", "core.logAllRefUpdates", "false"], env, cwd=mirror)
     git_ok(["config", "remote.origin.url", url], env, cwd=mirror)
 
@@ -385,9 +421,11 @@ def set_head(mirror, url, env, refs):
         git(["symbolic-ref", "HEAD", choice], env, cwd=mirror)
 
 
-def fetch_lfs(mirror, env):
-    """Downloads the LFS files of every ref. Returns an error message, or None."""
-    r = git(["lfs", "fetch", "--all", "origin"], env, cwd=mirror, timeout=FETCH_TIMEOUT)
+def fetch_lfs(mirror, env, refs):
+    """Downloads the LFS files in the history of GitHub's refs. Returns an error message, or None.
+    Refs from a Mac are left out: GitHub doesn't have the LFS files of commits that were never pushed."""
+    named = refs if len(refs) <= LFS_MAX_NAMED_REFS else []
+    r = git(["lfs", "fetch", "--all", "origin"] + named, env, cwd=mirror, timeout=FETCH_TIMEOUT)
     if r.returncode == 0:
         return None
     lines = [line for line in (r.stderr + r.stdout).splitlines() if line.strip()]
@@ -416,53 +454,189 @@ def folder_stats(path):
     return total, files
 
 
-def back_up_repo(entry, root, day, keep):
-    name, url = entry["name"], entry["url"]
-    mirror = os.path.join(root, entry["path"])
-    env = repo_env(name, url)
-    result = {"name": name, "action": "unchanged"}
-    source = github_refs(url, env)
-    is_new = not os.path.exists(os.path.join(mirror, "HEAD"))
-    prepare_mirror(mirror, url, env)
-    state_path = os.path.join(mirror, MIRROR_STATE)
-    state = read_json(state_path, {})
-    current = mirror_refs(mirror, env)
+def adopt_legacy(mirror, legacy, env, state, state_path):
+    """Copies the app's old mirror in once: its branches and tags to sort later, plus kept refs and the stash."""
+    if state.get("adopted") or not legacy:
+        return
+    if os.path.exists(os.path.join(legacy, "HEAD")):
+        specs = ["+refs/heads/*:%sheads/*" % LEGACY_REFS, "+refs/tags/*:%stags/*" % LEGACY_REFS, "+refs/deleted/*:refs/deleted/*"]
+        if git(["rev-parse", "-q", "--verify", "refs/stash"], env, cwd=legacy).returncode == 0:
+            specs.append("+refs/stash:refs/stash")
+        git_ok(["-c", "gc.auto=0", "-c", "pack.threads=2", "fetch", "--quiet", "--force", "--no-tags", "--no-write-fetch-head", legacy] + specs,
+               env, cwd=mirror, timeout=FETCH_TIMEOUT, step="copying the existing backup")
+    state["adopted"] = True
+    write_json(state_path, state)
 
+
+def update_from_github(entry, mirror, env, state, state_path, day, keep, result):
+    """Returns True when the mirror's GitHub refs changed."""
+    url = entry["url"]
+    source, env = read_github(entry["name"], url, env)
+    current = mirror_refs(mirror, env)
     if not source:
         if current:
             raise RepoFailure("GitHub reported no branches, but this repo had %d at the last backup. The mirror wasn't changed." % len(current))
         result["action"] = "skipped"
         result["detail"] = "empty repository, nothing to back up"
-        return result
-
+        return False
     fingerprint_now = refs_fingerprint(source)
     refs_changed = current != source
     if refs_changed:
         kept, pruned = update_mirror(mirror, source, env, day, keep)
         current = mirror_refs(mirror, env)
-        result["action"] = "new" if is_new else "changed"
-        if kept:
-            result["kept_refs"] = kept
+        result["action"] = "changed"
+        result["kept_refs"] = kept
         if pruned:
             result["pruned_refs"] = pruned
     set_head(mirror, url, env, current)
-
-    lfs_error = None
     if refs_changed or state.get("lfs_done_for") != fingerprint_now:
-        lfs_error = fetch_lfs(mirror, env)
+        lfs_error = fetch_lfs(mirror, env, sorted(current))
         state["lfs_done_for"] = None if lfs_error else fingerprint_now
         write_json(state_path, state)
-    if refs_changed:
+        if lfs_error:
+            result["lfs_error"] = "Git LFS files weren't all downloaded: %s" % lfs_error
+    return refs_changed
+
+
+def holds_commits_not_on_github(mirror, env, sha):
+    """True unless every commit is on a GitHub branch or tag. Anything git can't walk counts as true, so it's kept."""
+    r = git(["rev-list", "-1", sha, "--not"] + NOT_ON_GITHUB, env, cwd=mirror)
+    return r.returncode != 0 or bool(r.stdout.strip())
+
+
+def is_ancestor(mirror, env, old, new):
+    return git(["merge-base", "--is-ancestor", old, new], env, cwd=mirror).returncode == 0
+
+
+def refs_under(refs, prefix):
+    return {ref[len(prefix):]: sha for ref, sha in refs.items() if ref.startswith(prefix)}
+
+
+def live_refs(mirror, env):
+    out = git_ok(["for-each-ref", "--format=%(objectname) %(refname)"], env, cwd=mirror)
+    return {ref: sha for ref, sha in parse_refs(out).items() if not ref.startswith(DELETED_PREFIX)}
+
+
+def publish_mac_work(entry, mirror, env, state, state_path, day, keep, github_read, result):
+    """Sorts what the Mac sent and what the old mirror held. Refs with commits GitHub lacks become from-mac/ branches
+    and tags. A from-mac/ ref the Mac no longer has moves to refs/deleted/, and one GitHub now holds is dropped."""
+    everything = live_refs(mirror, env)
+    if state.get("published_for") == refs_fingerprint(everything):
+        result["from_mac"] = state.get("from_mac", 0)
+        return False
+
+    existing = all_ref_names(mirror, env)
+    mac_sent = bool(refs_under(everything, MAC_REFS + "heads/"))
+    # Without an answer from GitHub, or from a Mac that holds these branches, the old mirror's refs stay visible.
+    legacy_stays_visible = not mac_sent and (entry.get("source") == "clone" or not github_read)
+    kept, commands, published_count, changed = [], [], 0, False
+
+    def keep_copy(ref, sha):
+        if keep:
+            name = deleted_name(ref, day, existing)
+            commands.append("create %s %s" % (name, sha))
+            kept.append(name)
+
+    for kind in ("heads", "tags"):
+        published = refs_under(everything, "refs/%s/from-mac/" % kind)
+        mac = refs_under(everything, "%s%s/" % (MAC_REFS, kind))
+        legacy = refs_under(everything, "%s%s/" % (LEGACY_REFS, kind))
+        candidates = dict(mac) if mac_sent else dict(published)
+        for name, sha in sorted(legacy.items()):
+            commands.append("delete %s%s/%s %s" % (LEGACY_REFS, kind, name, sha))
+            if not holds_commits_not_on_github(mirror, env, sha):
+                continue
+            if name in mac:
+                if not is_ancestor(mirror, env, sha, mac[name]):
+                    keep_copy("refs/%s/%s" % (kind, name), sha)
+            elif legacy_stays_visible:
+                candidates[name] = sha
+            else:
+                keep_copy("refs/%s/%s" % (kind, name), sha)
+        desired = {name: sha for name, sha in candidates.items() if holds_commits_not_on_github(mirror, env, sha)}
+        published_count += len(desired)
+        for name, sha in sorted(published.items()):
+            ref = "refs/%s/from-mac/%s" % (kind, name)
+            if name not in desired:
+                if holds_commits_not_on_github(mirror, env, sha):
+                    keep_copy(ref, sha)
+                commands.append("delete %s %s" % (ref, sha))
+                changed = True
+        for name, sha in sorted(desired.items()):
+            ref = "refs/%s/from-mac/%s" % (kind, name)
+            old = published.get(name)
+            if old == sha:
+                continue
+            if old and not is_ancestor(mirror, env, old, sha) and holds_commits_not_on_github(mirror, env, old):
+                keep_copy(ref, old)
+            commands.append("update %s %s" % (ref, sha))
+            changed = True
+
+    stash = everything.get(MAC_REFS + "stash")
+    if stash:
+        if everything.get("refs/stash") != stash:
+            commands.append("update refs/stash %s" % stash)
+    elif mac_sent and "refs/stash" in everything:
+        commands.append("delete refs/stash %s" % everything["refs/stash"])
+    update_refs(mirror, env, commands)
+
+    if kept:
+        result["kept_refs"] = result.get("kept_refs", []) + kept
+    result["from_mac"] = published_count
+    state["published_for"] = refs_fingerprint(live_refs(mirror, env))
+    state["from_mac"] = published_count
+    write_json(state_path, state)
+    return changed or bool(kept)
+
+
+def explain_github_failure(name, url, detail):
+    if "could not read username" in detail.lower() and url.startswith("https://github.com/") and not token_file(name.split("/")[0]):
+        return "There's no GitHub token for %s on the NAS, so changes on GitHub aren't backed up." % name.split("/")[0]
+    return detail
+
+
+def back_up_repo(entry, root, day, keep):
+    name, url = entry["name"], entry["url"]
+    mirror = os.path.join(root, entry["path"])
+    env = repo_env(name, url)
+    result = {"name": name, "action": "unchanged"}
+    is_new = not os.path.exists(os.path.join(mirror, "HEAD"))
+    prepare_mirror(mirror, url, env)
+    state_path = os.path.join(mirror, MIRROR_STATE)
+    state = read_json(state_path, {})
+    adopt_legacy(mirror, entry.get("legacy"), env, state, state_path)
+
+    github_error = None
+    refs_changed = False
+    try:
+        refs_changed = update_from_github(entry, mirror, env, state, state_path, day, keep, result)
+    except RepoFailure as e:
+        github_error = explain_github_failure(name, url, str(e))
+    published = publish_mac_work(entry, mirror, env, state, state_path, day, keep, github_error is None, result)
+    if refs_changed or published:
         tidy_mirror(mirror, env)
         git_ok(["fsck", "--connectivity-only", "--no-dangling", "--no-progress"], env, cwd=mirror, timeout=FETCH_TIMEOUT, step="checking the mirror")
+    if published and result["action"] == "unchanged":
+        result["action"] = "changed"
+    if is_new and result["action"] == "changed":
+        result["action"] = "new"
+    if not result.get("kept_refs"):
+        result.pop("kept_refs", None)
 
+    current = mirror_refs(mirror, env)
     lfs_bytes, lfs_files = folder_stats(os.path.join(mirror, "lfs", "objects"))
     result.update(branches=sum(ref.startswith("refs/heads/") for ref in current),
                   tags=sum(ref.startswith("refs/tags/") for ref in current),
                   lfs_files=lfs_files, lfs_bytes=lfs_bytes, bytes=folder_stats(mirror)[0])
-    if lfs_error:
+    if github_error:
+        result["action"] = "failed"
+        result["detail"] = github_error
+        if "not found" in github_error.lower():
+            result["gone"] = True
+    elif result.get("lfs_error"):
         result["action"] = "warning"
-        result["detail"] = "Git LFS files weren't all downloaded: %s" % lfs_error
+        result["detail"] = result["lfs_error"]
+    result.pop("lfs_error", None)
     return result
 
 

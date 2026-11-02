@@ -97,7 +97,7 @@ private final class GitSandbox {
                 repos: [URL] = [], onRemoteDelete: GitHubConfig.OnRemoteDelete = .keep) -> GitHubConfig {
         var c = GitHubConfig(every: Interval(seconds: 86400), around: nil, staleAfter: Interval(seconds: 172800), dest: "github-backups",
                              scan: [scan], newRepos: newRepos, exclude: exclude, remoteOnly: remoteOnly,
-                             groups: ["acme": "acme", "*": "other"], gc: false, line: 1)
+                             groups: ["acme": "acme", "*": "other"], line: 1)
         c.repos = repos
         c.onRemoteDelete = onRemoteDelete
         return c

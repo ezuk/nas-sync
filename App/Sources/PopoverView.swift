@@ -272,7 +272,7 @@ struct PopoverView: View {
             let failed = all.filter { $0.status == .failed }
             let waiting = running ? 0 : status.github?.waitingForMirror ?? 0
             let others = all.count - min(failed.count, 2)
-            let helper = status.helper.flatMap { Diagnosis.forHelper($0) }
+            let helper = status.helper.flatMap { Diagnosis.forHelper($0) } ?? Diagnosis.forHelperRun(status.helperRun)
             if !folders.isEmpty || !failed.isEmpty || waiting > 0 || helper != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     if let helper {

@@ -40,7 +40,7 @@ struct ReposView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
             }
-            Text("Each repo is one git mirror on the NAS. Branches and tags deleted or force-pushed at the source stay in it under refs/deleted.")
+            Text("Each repo is one git mirror on the NAS. Work that's only on this Mac is in from-mac/ branches. Branches and tags deleted or force-pushed at the source stay in it under refs/deleted.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.vertical, 8)
@@ -98,7 +98,7 @@ struct ReposView: View {
                     Text(r.source == .localClone ? "Local clone" : "Remote only")
                     if !r.hasGitHubRemote { Tag(text: "No GitHub remote", style: .local).help("No GitHub remote. The NAS has the only other copy.") }
                     if let n = r.unpushedCommits, n > 0 { Tag(text: "\(n) unpushed", style: .local) }
-                    if r.usesLFS { Tag(text: "LFS not included", style: .archived) }
+                    if r.usesLFS, !r.usesHelper { Tag(text: "LFS not included", style: .archived) }
                     switch r.status {
                     case .goneFromGitHub: Tag(text: "Gone from GitHub", style: .bad)
                     case .missingLocally: Tag(text: r.source == .localClone ? "Clone missing" : "Removed from config", style: .bad)
@@ -127,10 +127,8 @@ struct ReposView: View {
             if let id = ids.first, let r = repos.first(where: { $0.id == id }) {
                 if let path = r.localPath { Button("Show Local Clone") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) } }
                 if let url = r.githubURL { Button("Open on GitHub") { NSWorkspace.shared.open(url) } }
-                if let gh = model.engine.config?.githubSettings, let mirror = r.mirrorPath {
-                    Button("Copy Mirror Path on NAS") {
-                        model.copyNASPath(GitHubBackup.nasMirrorPath(dest: gh.dest, mirrorPath: mirror))
-                    }
+                if let gh = model.engine.config?.githubSettings, let path = GitHubBackup.nasMirrorPath(dest: gh.dest, record: r) {
+                    Button("Copy Mirror Path on NAS") { model.copyNASPath(path) }
                 }
                 Divider()
                 Button("Exclude in Config…") { model.openConfigInEditor() }
@@ -190,6 +188,9 @@ struct AddRepoSheet: View {
         if let error { return error }
         guard let p = parsed else { return "Name or URL, like acme/firmware." }
         if model.engine.config?.github?.excludeSet.matches(p) == true { return "\(p) matches an exclude pattern; remove it from exclude too." }
+        if let known = model.engine.store.repos().first(where: { $0.fullName.lowercased() == p.lowercased() }), known.source == .localClone {
+            return "You have a local clone of \(known.fullName), so it's listed under Local clones, not Remote only."
+        }
         return "Will be added as \(p)."
     }
 

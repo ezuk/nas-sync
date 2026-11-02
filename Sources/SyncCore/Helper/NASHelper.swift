@@ -155,6 +155,10 @@ public struct HelperManifest: Sendable, Codable, Equatable {
         public var url: String
         /// Inside the mirrors folder, like `acme/app.git`.
         public var path: String
+        /// The app's old mirror of this repo, absolute on the NAS. The helper copies it in once.
+        public var legacy: String?
+        /// `clone` when a Mac also has the repo, or `remote`.
+        public var source: String?
     }
 
     public static let currentVersion = 1
@@ -173,7 +177,8 @@ public struct HelperManifest: Sendable, Codable, Equatable {
         case onRemoteDelete = "on_remote_delete"
     }
 
-    /// The config's repos that are on GitHub. With `only`, just the named ones. Names already in `store` keep their paths.
+    /// The repos the helper should back up: those matching `helper_repos`, leaving out new clones that are still
+    /// waiting for approval. With `only`, just the named ones. Names already in `store` keep their paths.
     public static func build(config: GitHubConfig, nas: NAS, store: Store, only: Set<String>? = nil) -> HelperManifest {
         let backup = GitHubBackup(config: config, nas: nas, store: store)
         let known = Dictionary(store.repos().map { ($0.fullName.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
@@ -182,8 +187,15 @@ public struct HelperManifest: Sendable, Codable, Equatable {
         let repos = RepoDiscovery.targets(config: config).targets.compactMap { t -> Repo? in
             guard t.hasGitHubRemote else { return nil }
             let path = backup.assignMirrorPath(t, existing: known[t.fullName.lowercased()], claimed: &claimed)
-            if let wanted, !wanted.contains(t.fullName.lowercased()) { return nil }
-            return Repo(name: t.fullName, url: "https://github.com/\(t.fullName).git", path: path)
+            if let wanted {
+                if !wanted.contains(t.fullName.lowercased()) { return nil }
+            } else {
+                let approved = known[t.fullName.lowercased()] != nil || t.isListed || t.source == .remoteOnly
+                if !approved || !config.usesHelper(t.fullName) { return nil }
+            }
+            return Repo(name: t.fullName, url: "https://github.com/\(t.fullName).git", path: path,
+                        legacy: nas.absolute(GitHubBackup.nasMirrorPath(dest: config.dest, mirrorPath: path)),
+                        source: t.source == .localClone ? "clone" : "remote")
         }
         return HelperManifest(mirrors: nas.absolute("\(config.dest)/\(mirrorsFolder)"), onRemoteDelete: config.onRemoteDelete.rawValue, repos: repos)
     }
@@ -203,11 +215,23 @@ public struct HelperRunReport: Sendable, Codable, Equatable {
         public var bytes: Int64?
         public var seconds: Double?
         public var keptRefs: [String]?
+        /// Branches and tags holding work that's only on a Mac.
+        public var fromMac: Int?
+        public var gone: Bool?
 
         public var id: String { name }
 
+        init(name: String, action: String, detail: String? = nil, bytes: Int64? = nil, gone: Bool? = nil) {
+            self.name = name
+            self.action = action
+            self.detail = detail
+            self.bytes = bytes
+            self.gone = gone
+        }
+
         enum CodingKeys: String, CodingKey {
-            case name, action, detail, branches, tags, bytes, seconds
+            case name, action, detail, branches, tags, bytes, seconds, gone
+            case fromMac = "from_mac"
             case lfsFiles = "lfs_files"
             case lfsBytes = "lfs_bytes"
             case keptRefs = "kept_refs"
@@ -224,10 +248,62 @@ public struct HelperRunReport: Sendable, Codable, Equatable {
 
     public var isFinished: Bool { status == "finished" }
 
+    init(status: String, started: Date? = nil, finished: Date? = nil, total: Int? = nil, repos: [Repo]) {
+        self.status = status
+        self.started = started
+        self.finished = finished
+        self.total = total
+        self.repos = repos
+    }
+
+    public var failedRepos: [Repo] { repos.filter { $0.action == "failed" || $0.action == "warning" } }
+
+    /// The Activity entry for a finished run.
+    public func runRecord() -> RunRecord {
+        var counts = RunCounts()
+        counts.total = total ?? repos.count
+        var items: [RunItem] = []
+        for repo in repos {
+            counts.keptRefs += repo.keptRefs?.count ?? 0
+            switch repo.action {
+            case "new":
+                counts.new += 1
+                items.append(RunItem(action: .new, path: repo.name, size: repo.bytes, detail: repo.detail ?? "first backup"))
+            case "changed":
+                counts.changed += 1
+                items.append(RunItem(action: .changed, path: repo.name, size: repo.bytes, detail: repo.detail ?? "updated"))
+            case "failed", "warning":
+                counts.failed += 1
+                items.append(RunItem(action: .failed, path: repo.name, detail: repo.detail ?? "failed"))
+            case "skipped":
+                counts.skipped += 1
+                items.append(RunItem(action: .skipped, path: repo.name, size: repo.bytes, detail: repo.detail ?? "skipped"))
+            default:
+                counts.unchanged += 1
+                items.append(RunItem(action: .unchanged, path: repo.name, size: repo.bytes, detail: repo.detail ?? "unchanged"))
+            }
+        }
+        var parts: [String] = []
+        if counts.copied > 0 { parts.append("\(counts.copied) updated") }
+        if counts.unchanged > 0 { parts.append("\(counts.unchanged) unchanged") }
+        if counts.failed > 0 { parts.append("\(counts.failed) failed") }
+        var record = RunRecord(kind: .helper, job: "", trigger: "NAS helper", started: started ?? Date(), finished: finished ?? Date(),
+                               outcome: counts.failed > 0 ? .warning : .success,
+                               summary: parts.isEmpty ? "No repos to back up" : parts.joined(separator: ", "),
+                               message: failedRepos.prefix(3).map { "\($0.name): \($0.detail ?? "failed")" }.joined(separator: "\n").nilIfEmpty)
+        record.counts = counts
+        record.items = items
+        return record
+    }
+
     enum CodingKeys: String, CodingKey {
         case status, started, finished, total, current, repos
         case helperVersion = "helper_version"
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 public enum HelperError: Error, Sendable, Equatable, CustomStringConvertible {

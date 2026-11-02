@@ -28,6 +28,15 @@ import Testing
         #expect(Diagnosis.explain("The mirror didn't pass git's check, so the NAS copy wasn't changed (x).").title == "The mirror failed git's integrity check")
     }
 
+    @Test func missingTokenOffersToStopBackingUp() {
+        let d = Diagnosis.forRepo(repo(.failed, "There's no GitHub token for acme on the NAS, so changes on GitHub aren't backed up."))
+        #expect(d.title == "The NAS can't read this repo on GitHub")
+        #expect(!d.isUnrecognized)
+        #expect(d.advice.contains("github-token-acme"))
+        #expect(d.fixes == [.stopBackingUp, .openOnGitHub, .revealClone])
+        #expect(Diagnosis.explain("acme/app: There's no GitHub token for acme on the NAS, so changes on GitHub aren't backed up.").fixes.isEmpty)
+    }
+
     @Test func unknownErrorsKeepTheOriginalText() {
         let d = Diagnosis.explain("frobnicator overheated")
         #expect(d.isUnrecognized)

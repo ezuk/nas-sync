@@ -44,9 +44,9 @@ GitHub runs explain why each repo was or wasn't backed up.
 
 ![A GitHub run listing what changed in each repo](docs/screenshots/github-run.png)
 
-The Repos window shows every repo it knows about, where it comes from and how many copies are on the NAS.
+Settings > Git Repos > Repos shows every repo it knows about, where it comes from and the state of its copy on the NAS. It's also where you add a repo, turn one off or see what's wrong with one. The Repos item in the menu opens this page.
 
-![The Repos window](docs/screenshots/repos.png)
+![The Repos page in Settings](docs/screenshots/repos.png)
 
 ## How it works
 
@@ -324,7 +324,7 @@ git lfs pull
 
 A mirror the app made without the helper has no LFS files, and needs no `--upload-pack` if your NAS's SSH commands can already find git. If git stops with `git-upload-pack: command not found`, use the rsync line and `git clone app.git`.
 
-The clone has every branch and tag as of the last backup. Work that was only on your Mac is in branches and tags named `from-mac/<name>`. Branches and tags that were deleted or force-pushed at the source are kept under `refs/deleted/`. To see them, clone with `--mirror` and run `git for-each-ref refs/deleted`, or bring them into a normal clone with `git fetch origin 'refs/deleted/*:refs/deleted/*'`. In the Repos window, right-click a repo and choose Copy Mirror Path on NAS.
+The clone has every branch and tag as of the last backup. Work that was only on your Mac is in branches and tags named `from-mac/<name>`. Branches and tags that were deleted or force-pushed at the source are kept under `refs/deleted/`. To see them, clone with `--mirror` and run `git for-each-ref refs/deleted`, or bring them into a normal clone with `git fetch origin 'refs/deleted/*:refs/deleted/*'`. On the Repos page in Settings, right-click a repo and choose Open Mirror on NAS to see it in Finder, or Copy Mirror Path on NAS for its full path. Click a column heading to sort the list.
 
 Archives from older versions (`github-backups/bundles/.../*.bundle.xz`) turn back into a repo in two steps:
 
@@ -361,7 +361,7 @@ swift run nas-sync helper report               # the helper's latest run
 
 **It always says you're away.** The app doesn't have Location permission, or `wifi` in the config doesn't match the network name exactly.
 
-**A backup needs attention.** The menu explains what went wrong and offers the fix, such as backing up again or showing the file involved. For more, open Activity, or the Problems tab in Repos, and expand "Technical details" for the original error. "Copy Details" puts it on the clipboard.
+**A backup needs attention.** The menu explains what went wrong and offers the fix, such as backing up again or showing the file involved. For more, open Activity, or Problems on the Repos page in Settings, and expand "Technical details" for the original error. "Copy Details" puts it on the clipboard.
 
 **A folder fails with a permission error on your Mac.** Grant Full Disk Access in System Settings > Privacy & Security, then restart the app.
 

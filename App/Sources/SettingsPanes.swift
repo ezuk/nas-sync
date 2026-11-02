@@ -726,54 +726,94 @@ struct GroupsEditor: View {
 
 // MARK: Git Repos › Repos
 
-/// Every repo the config would back up, where it comes from, and the space its mirror takes.
+private extension GitReposPane.Row.RepoState {
+    var isSkipped: Bool {
+        if case .skippedBy = self { return true }
+        return false
+    }
+}
+
+/// Every repo the config would back up or has backed up: where it comes from, the state of its mirror, and its problems.
 struct GitReposPane: View {
     @Environment(SettingsModel.self) private var s
     @Environment(AppModel.self) private var model
     @State private var found: (targets: [RepoTarget], excluded: [RepoTarget])?
+    @State private var records: [String: RepoRecord] = [:]
+    @State private var filter: Filter = .all
+    @State private var search = ""
+    @State private var openProblem: Row.ID?
     @State private var draft = ""
     @State private var message: String?
+    @State private var openError: String?
+    @State private var sort = Sort(column: .name, ascending: true)
 
     private func f(_ key: String) -> FieldKey { .named("github", key) }
 
+    enum Filter: Hashable { case all, mac, github, problems, off }
+
+    struct Sort: Equatable {
+        enum Column { case name, source, updated, size }
+        var column: Column
+        var ascending: Bool
+    }
+
     struct Row: Identifiable {
-        enum RepoState: Equatable { case on, off, skippedBy(String) }
+        enum RepoState: Equatable { case on, off, skippedBy(String), gone }
         var id: String { name.lowercased() }
         var name: String
         var fromMac: Bool
         var location: String
-        var size: Int64?
         var state: RepoState
         var noRemote: Bool
+        var record: RepoRecord?
+
+        var problem: RepoProblem? { state == .on || state == .gone ? record?.problem : nil }
+        /// What the "Backed up from" column sorts by.
+        var source: String { (fromMac ? "This Mac " : "GitHub ") + location }
     }
 
     var body: some View {
         let g = s.github
         let on = s.githubOn
-        SettingsPage(title: "Repos", subtitle: "Every repo that gets backed up, where it comes from and how much space it takes.") {
+        SettingsPage(title: "Repos", subtitle: "Every repo that gets backed up, where it comes from and the state of its copy on the NAS.") {
             GitOffNote()
-            SettingsGroup(footer: "Repos from this Mac don't need a GitHub remote; ones without one go in the \(GitHubConfig.localGroup) folder on the NAS. Repos from GitHub are saved as remote_only. Turning a repo off adds it to the skip list in Config; its copy on the NAS is kept.",
+            SettingsGroup(footer: "Each repo is one git mirror on the NAS. Work that's only on this Mac is in from-mac/ branches, and branches and tags deleted or force-pushed at the source stay under refs/deleted. Repos from this Mac don't need a GitHub remote; ones without one go in the \(GitHubConfig.localGroup) folder. Turning a repo off adds it to the skip list in Config; its copy on the NAS is kept.",
                           dimmed: !on) {
                 VStack(spacing: 0) {
-                    header
                     if let found {
-                        let rows = Self.rows(found, config: g, sizes: sizes())
-                        ForEach(rows) { row in
+                        let rows = Self.rows(found, config: g, records: records)
+                        let shown = visible(rows)
+                        controls(rows)
+                        if let e = s.error(f("exclude")) {
+                            RowMessage(text: e, isError: true).padding(.horizontal, 10).padding(.bottom, 8)
+                        }
+                        if let openError {
+                            RowMessage(text: openError, isError: true).padding(.horizontal, 10).padding(.bottom, 8)
+                        }
+                        Divider()
+                        header
+                        LazyVStack(spacing: 0) {
+                            ForEach(shown) { row in
+                                Divider()
+                                repoRow(row, config: g)
+                            }
+                        }
+                        if shown.isEmpty {
                             Divider()
-                            repoRow(row, config: g)
+                            Text("No repos here.").font(.system(size: 12)).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(10)
                         }
                         Divider()
                         HStack(spacing: 12) {
                             Text("\(rows.filter { $0.state == .on }.count) of \(rows.count) backed up")
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(Self.size(rows.compactMap(\.size).reduce(0, +)))
-                                .foregroundStyle(.primary).monospacedDigit().frame(width: 70, alignment: .trailing)
-                            Spacer().frame(width: 40)
+                            Text(Self.size(rows.compactMap(\.record?.sizeOnNAS).reduce(0, +)))
+                                .foregroundStyle(.primary).monospacedDigit().frame(width: Self.sizeWidth, alignment: .trailing)
+                            Spacer().frame(width: Self.toggleWidth)
                         }
                         .font(.system(size: 11.5)).foregroundStyle(.secondary)
                         .padding(.horizontal, 10).padding(.vertical, 6)
                     } else {
-                        Divider()
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
                             Text("Looking for repos…").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -789,14 +829,47 @@ struct GitReposPane: View {
         }
         .task(id: g) { await discover(g) }
         .onChange(of: g) { message = nil }
+        .onAppear {
+            loadRecords()
+            showProblemsIfRequested()
+        }
+        .onChange(of: model.engine.historyVersion) { loadRecords() }
+        .onChange(of: model.repoProblemsRequest) { showProblemsIfRequested() }
+    }
+
+    private static let sourceWidth: CGFloat = 150
+    private static let updatedWidth: CGFloat = 86
+    private static let sizeWidth: CGFloat = 62
+    private static let toggleWidth: CGFloat = 40
+
+    private func controls(_ rows: [Row]) -> some View {
+        HStack(spacing: 10) {
+            Picker("Show", selection: $filter) {
+                Text("All \(rows.filter { matches($0, .all) }.count)").tag(Filter.all)
+                Text("This Mac \(rows.filter { matches($0, .mac) }.count)").tag(Filter.mac)
+                Text("GitHub \(rows.filter { matches($0, .github) }.count)").tag(Filter.github)
+                Text("Problems \(rows.filter { matches($0, .problems) }.count)").tag(Filter.problems)
+                Text("Off \(rows.filter { matches($0, .off) }.count)").tag(Filter.off)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            TextField("Search", text: $search)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     private var header: some View {
         HStack(spacing: 12) {
-            Text("Repo").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Backed up from").frame(width: 190, alignment: .leading)
-            Text("On NAS").frame(width: 70, alignment: .trailing)
-            Spacer().frame(width: 40)
+            columnHeader("Repo", .name).frame(maxWidth: .infinity, alignment: .leading)
+            columnHeader("Backed up from", .source).frame(width: Self.sourceWidth, alignment: .leading)
+            columnHeader("Updated", .updated).frame(width: Self.updatedWidth, alignment: .leading)
+            columnHeader("On NAS", .size, trailing: true).frame(width: Self.sizeWidth, alignment: .trailing)
+            Spacer().frame(width: Self.toggleWidth)
         }
         .font(.system(size: 11))
         .foregroundStyle(.secondary)
@@ -805,38 +878,193 @@ struct GitReposPane: View {
         .background(.primary.opacity(0.03))
     }
 
+    /// Sorts by this column, or flips the order if it already is. Dates and sizes start with the newest and largest.
+    private func columnHeader(_ title: String, _ column: Sort.Column, trailing: Bool = false) -> some View {
+        let active = sort.column == column
+        let arrow = Image(systemName: sort.ascending ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+        return Button {
+            sort = active ? Sort(column: column, ascending: !sort.ascending) : Sort(column: column, ascending: column == .name || column == .source)
+        } label: {
+            HStack(spacing: 3) {
+                if active, trailing { arrow }
+                Text(title)
+                if active, !trailing { arrow }
+            }
+            .foregroundStyle(active ? Color.primary : Color.secondary)
+            .frame(maxWidth: .infinity, alignment: trailing ? .trailing : .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(active ? (sort.ascending ? "Sorted ascending" : "Sorted descending") : "")
+    }
+
     private func repoRow(_ row: Row, config g: GitHubConfig) -> some View {
         let note: String? = switch row.state {
         case .skippedBy(let p): "Skipped by \(p)"
         case .off: "Off. Nothing new is backed up"
-        case .on: row.noRemote ? "No GitHub remote. The NAS has the only other copy" : nil
+        case .gone: row.record?.message ?? (row.fromMac ? "The clone is gone. The mirror on the NAS is kept" : "Removed from the config. The mirror on the NAS is kept")
+        case .on: row.record?.message ?? (row.noRemote ? "No GitHub remote. The NAS has the only other copy" : nil)
         }
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(row.name).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.middle)
-                if let note { Text(note).font(.system(size: 11)).foregroundStyle(.secondary) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(row.fromMac ? "This Mac" : "GitHub").font(.system(size: 12))
-                Text(row.location).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.head).help(row.location)
-            }
-            .frame(width: 190, alignment: .leading)
-            Text(row.size.map(Self.size) ?? "–").font(.system(size: 12)).monospacedDigit().frame(width: 70, alignment: .trailing)
-            HStack {
-                if case .skippedBy(let p) = row.state {
-                    SettingToggle(isOn: false) { _ in }.disabled(true).help("Change \(p) in Config to back this repo up.")
-                } else {
-                    SettingToggle(isOn: row.state == .on) { toggle(row, on: $0, config: g) }
+        let problem = row.problem
+        let isOpen = problem != nil && openProblem == row.id
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    HStack(alignment: .top, spacing: 7) {
+                        StatusDot(color: color(row)).padding(.top, 4)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Text(row.name).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                                if problem != nil {
+                                    Image(systemName: isOpen ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                                }
+                            }
+                            if let note { Text(note).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true).help(note) }
+                            tags(row)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(row.fromMac ? "This Mac" : "GitHub").font(.system(size: 12))
+                        Text(row.location).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.head).help(row.location)
+                    }
+                    .frame(width: Self.sourceWidth, alignment: .leading)
+                    Text(row.record?.mirrorUpdated.map { StatusText.dayAndTime($0) } ?? "–")
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
+                        .frame(width: Self.updatedWidth, alignment: .leading)
+                        .help(row.record?.lastChangeSeen.map { "Last change seen \(StatusText.dayAndTime($0))" } ?? "")
+                    Text(row.record?.sizeOnNAS.map(Self.size) ?? "–").font(.system(size: 12)).monospacedDigit().frame(width: Self.sizeWidth, alignment: .trailing)
                 }
+                .contentShape(Rectangle())
+                .onTapGesture { if problem != nil { openProblem = isOpen ? nil : row.id } }
+                HStack {
+                    switch row.state {
+                    case .skippedBy(let p):
+                        SettingToggle(isOn: false) { _ in }.disabled(true).help("Change \(p) in Config to back this repo up.")
+                    case .gone:
+                        EmptyView()
+                    case .on, .off:
+                        SettingToggle(isOn: row.state == .on) { toggle(row, on: $0, config: g) }.help("Back up this repo")
+                    }
+                }
+                .frame(width: Self.toggleWidth, alignment: .trailing)
             }
-            .frame(width: 40, alignment: .trailing)
+            if isOpen, let problem {
+                ProblemCard(subject: problem.fullName, diagnosis: Diagnosis.forRepo(problem), repo: problem).id(problem.fullName)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .opacity(row.state == .on ? 1 : 0.55)
-        .help("Back up this repo")
+        .opacity(row.state == .off || row.state.isSkipped ? 0.55 : 1)
+        .contextMenu { rowMenu(row, config: g) }
+    }
+
+    @ViewBuilder private func tags(_ row: Row) -> some View {
+        if let r = row.record, row.state == .on || row.state == .gone {
+            let isNew = Date().timeIntervalSince(r.firstSeen) < 3 * 86400 && r.status == .ok
+            let unpushed = r.unpushedCommits ?? 0
+            let plainLFS = r.usesLFS && !r.usesHelper
+            if unpushed > 0 || plainLFS || isNew || !r.deletedRefsKept.isEmpty || r.status == .goneFromGitHub || r.status == .failed || r.isWaitingForMirror {
+                HStack(spacing: 4) {
+                    if unpushed > 0 { Tag(text: "\(unpushed) unpushed", style: .local) }
+                    if plainLFS { Tag(text: "LFS not included", style: .archived) }
+                    if r.status == .goneFromGitHub { Tag(text: "Gone from GitHub", style: .bad) }
+                    if r.status == .failed { Tag(text: "Failed", style: .bad) }
+                    if r.isWaitingForMirror { Tag(text: "Not on NAS yet", style: .archived) }
+                    if !r.deletedRefsKept.isEmpty {
+                        Tag(text: "\(r.deletedRefsKept.count) deleted, kept", style: .archived)
+                            .help(r.deletedRefsKept.prefix(20).map { String($0.dropFirst(GitHubBackup.deletedRefsPrefix.count)) }.joined(separator: "\n"))
+                    }
+                    if isNew { Tag(text: "New", style: .new) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func rowMenu(_ row: Row, config g: GitHubConfig) -> some View {
+        if let path = row.record?.localPath, row.fromMac {
+            Button("Show Local Clone") { NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: path)]) }
+        }
+        if !row.noRemote, let url = URL(string: "https://github.com/\(row.name)") {
+            Button("Open on GitHub") { NSWorkspace.shared.open(url) }
+        }
+        if let record = row.record, let path = GitHubBackup.nasMirrorPath(dest: g.dest, record: record) {
+            Button("Open Mirror on NAS") { openOnNAS(path) }
+            Button("Copy Mirror Path on NAS") { model.copyNASPath(path) }
+        }
+    }
+
+    private func color(_ row: Row) -> Color {
+        switch row.state {
+        case .off, .skippedBy: return Palette.grey
+        case .gone: return Palette.red
+        case .on:
+            guard let r = row.record else { return Palette.grey }
+            switch r.status {
+            case .ok: return r.mirrorUpdated == nil ? Palette.grey : Palette.green
+            case .excluded: return Palette.grey
+            case .failed, .goneFromGitHub, .missingLocally: return Palette.red
+            }
+        }
+    }
+
+    private func matches(_ row: Row, _ filter: Filter) -> Bool {
+        switch filter {
+        case .all: true
+        case .mac: row.fromMac
+        case .github: !row.fromMac
+        case .problems: row.problem != nil
+        case .off: row.state == .off || row.state.isSkipped
+        }
+    }
+
+    private func visible(_ rows: [Row]) -> [Row] {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        let shown = Self.sorted(rows.filter { matches($0, filter) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }, by: sort)
+        guard filter == .problems, sort == Sort(column: .name, ascending: true) else { return shown }
+        return shown.filter { $0.problem?.status == .failed } + shown.filter { $0.problem?.status != .failed }
+    }
+
+    /// Rows without a value go last in either direction, and ties go by name.
+    static func sorted(_ rows: [Row], by sort: Sort) -> [Row] {
+        func ordered<T: Comparable>(_ a: T?, _ b: T?) -> Bool? {
+            switch (a, b) {
+            case (nil, nil): return nil
+            case (nil, _): return false
+            case (_, nil): return true
+            case let (a?, b?): return a == b ? nil : (a < b) == sort.ascending
+            }
+        }
+        return rows.sorted { a, b in
+            let result: Bool? = switch sort.column {
+            case .name: nil
+            case .source: ordered(a.source.lowercased(), b.source.lowercased())
+            case .updated: ordered(a.record?.mirrorUpdated, b.record?.mirrorUpdated)
+            case .size: ordered(a.record?.sizeOnNAS, b.record?.sizeOnNAS)
+            }
+            if let result { return result }
+            let byName = a.name.lowercased() < b.name.lowercased()
+            return sort.column == .name && !sort.ascending ? !byName : byName
+        }
+    }
+
+    private func openOnNAS(_ path: String) {
+        openError = nil
+        Task { openError = await model.openOnNAS(path) }
+    }
+
+    private func loadRecords() {
+        records = Dictionary(model.engine.store.repos().map { ($0.fullName.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Switches to Problems with the worst repo open, when something asked for that.
+    private func showProblemsIfRequested() {
+        guard model.takeRepoProblemsRequest() else { return }
+        filter = .problems
+        search = ""
+        let problems = records.values.filter { $0.problem != nil }.sorted { $0.fullName.lowercased() < $1.fullName.lowercased() }
+        openProblem = (problems.first { $0.status == .failed } ?? problems.first)?.fullName.lowercased()
     }
 
     private func adders(_ g: GitHubConfig) -> some View {
@@ -855,7 +1083,7 @@ struct GitReposPane: View {
             if let message {
                 Text(message).font(.system(size: 11.5)).foregroundStyle(Palette.red)
             }
-            if let e = s.error(f("remote_only")) ?? s.error(f("repos")) ?? s.error(f("exclude")) {
+            if let e = s.error(f("remote_only")) ?? s.error(f("repos")) {
                 RowMessage(text: e, isError: true)
             }
         }
@@ -871,28 +1099,26 @@ struct GitReposPane: View {
         found = result
     }
 
-    private func sizes() -> [String: Int64] {
-        var out: [String: Int64] = [:]
-        for r in model.engine.store.repos() {
-            if let size = r.sizeOnNAS { out[r.fullName.lowercased()] = size }
-        }
-        return out
-    }
-
-    static func rows(_ found: (targets: [RepoTarget], excluded: [RepoTarget]), config g: GitHubConfig, sizes: [String: Int64]) -> [Row] {
+    static func rows(_ found: (targets: [RepoTarget], excluded: [RepoTarget]), config g: GitHubConfig, records: [String: RepoRecord]) -> [Row] {
         func row(_ t: RepoTarget, state: Row.RepoState) -> Row {
             let fromMac = t.source == .localClone
             let location = fromMac ? (t.localPath.map(SettingsModel.abbreviate) ?? "") : "github.com/\(t.fullName)"
-            return Row(name: t.fullName, fromMac: fromMac, location: location, size: sizes[t.fullName.lowercased()], state: state, noRemote: !t.hasGitHubRemote)
+            return Row(name: t.fullName, fromMac: fromMac, location: location, state: state, noRemote: !t.hasGitHubRemote, record: records[t.fullName.lowercased()])
         }
-        let on = found.targets.map { row($0, state: .on) }
-        let off = found.excluded.map { t -> Row in
+        // The skip list decides on or off, so a switch doesn't wait for the next scan.
+        let found = (found.targets + found.excluded).map { t -> Row in
             let name = t.fullName.lowercased()
             if g.exclude.contains(where: { $0.lowercased() == name }) { return row(t, state: .off) }
-            let pattern = g.exclude.first { p in GlobSet([p]).matches(t.fullName) || GlobSet([p]).matches(name) } ?? "a skip pattern"
+            guard let pattern = g.exclude.first(where: { p in GlobSet([p]).matches(t.fullName) || GlobSet([p]).matches(name) }) else { return row(t, state: .on) }
             return row(t, state: .skippedBy(pattern))
         }
-        return (on + off).sorted { $0.name.lowercased() < $1.name.lowercased() }
+        // Repos the config no longer finds, which still have a mirror on the NAS or a problem to show.
+        let present = Set(found.map(\.id))
+        let gone = records.values.filter { !present.contains($0.fullName.lowercased()) && ($0.mirrorPath != nil || $0.problem != nil) }.map { r in
+            Row(name: r.fullName, fromMac: r.source == .localClone, location: r.localPath.map { SettingsModel.abbreviate(URL(filePath: $0)) } ?? "github.com/\(r.fullName)",
+                state: .gone, noRemote: !r.hasGitHubRemote, record: r)
+        }
+        return (found + gone).sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
 
     static func size(_ bytes: Int64) -> String {
@@ -902,11 +1128,8 @@ struct GitReposPane: View {
     // MARK: Changes
 
     private func toggle(_ row: Row, on: Bool, config g: GitHubConfig) {
-        if on {
-            s.setList(f("exclude"), g.exclude.filter { $0.lowercased() != row.id })
-        } else if !g.exclude.contains(where: { $0.lowercased() == row.id }) {
-            s.setList(f("exclude"), g.exclude + [row.name])
-        }
+        let list = on ? g.exclude.filter { $0.lowercased() != row.id } : g.exclude + [row.name]
+        if s.set(f("exclude"), .strings(list)) { model.engine.markRepo(row.name, excluded: !on) }
     }
 
     private func known() -> Set<String> {
@@ -954,6 +1177,8 @@ struct GitReposPane: View {
         if s.set(f("remote_only"), .strings(g.remoteOnly + [name])) {
             draft = ""
             message = nil
+            model.engine.reloadConfig()
+            model.engine.backUpReposNow()
         }
     }
 }

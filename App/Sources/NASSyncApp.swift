@@ -22,12 +22,6 @@ struct NASSyncApp: App {
         }
         .defaultSize(width: 980, height: 620)
 
-        Window("Repos", id: WindowID.repos) {
-            ReposView()
-                .environment(model)
-        }
-        .defaultSize(width: 1040, height: 620)
-
         Window("Settings", id: WindowID.settings) {
             SettingsView()
                 .environment(model)
@@ -39,7 +33,6 @@ struct NASSyncApp: App {
 
 enum WindowID {
     static let activity = "activity"
-    static let repos = "repos"
     static let settings = "settings"
 }
 

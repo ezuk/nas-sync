@@ -121,6 +121,24 @@ private func makeEngine(_ world: FakeWorld) throws -> Engine {
 }
 
 @Suite(.serialized) @MainActor struct EngineTests {
+    @Test func turningARepoOffClearsItsProblemAndOnBringsItBack() throws {
+        let world = try FakeWorld()
+        let engine = try makeEngine(world)
+        var record = RepoRecord(fullName: "acme/app", source: .localClone, localPath: nil, firstSeen: Date())
+        record.helperProblem = "There's no GitHub token for acme on the NAS."
+        record.refreshHelperStatus()
+        try engine.store.saveRepo(record)
+        #expect(engine.store.repo("acme/app")?.problem != nil)
+
+        engine.markRepo("acme/app", excluded: true)
+        #expect(engine.store.repo("acme/app")?.status == .excluded)
+        #expect(engine.store.repo("acme/app")?.problem == nil)
+
+        engine.markRepo("acme/app", excluded: false)
+        #expect(engine.store.repo("acme/app")?.status == .failed)
+        #expect(engine.store.repo("acme/app")?.problem != nil)
+    }
+
     @Test func syncsAtHomeAndPicksUpChanges() async throws {
         let world = try FakeWorld()
         try world.write("a.txt", "A")

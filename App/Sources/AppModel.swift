@@ -18,8 +18,11 @@ final class AppModel {
         didSet { UserDefaults.standard.set(editorBundleID, forKey: "editorBundleID") }
     }
     private var started = false
-    /// Asks the Repos window to show its problems. Bumped each time.
+    /// Asks the Settings window to open on this page.
+    private(set) var requestedSettingsPane: SettingsPane?
+    /// Asks the Repos page to show its problems. Bumped each time.
     private(set) var repoProblemsRequest = 0
+    private var repoProblemsPending = false
 
     static var configURL: URL {
         if let path = UserDefaults.standard.string(forKey: "configPath") { return URL(filePath: path) }
@@ -121,7 +124,24 @@ final class AppModel {
 
     // MARK: Fixing problems
 
-    func requestRepoProblems() { repoProblemsRequest += 1 }
+    func requestRepoProblems() {
+        repoProblemsPending = true
+        repoProblemsRequest += 1
+    }
+
+    /// True once after each `requestRepoProblems()`.
+    func takeRepoProblemsRequest() -> Bool {
+        defer { repoProblemsPending = false }
+        return repoProblemsPending
+    }
+
+    /// Readies Settings to open on the Repos page. The caller opens the window.
+    func requestReposPage(problems: Bool = false) {
+        requestedSettingsPane = .gitRepos
+        if problems { requestRepoProblems() }
+    }
+
+    func clearRequestedSettingsPane() { requestedSettingsPane = nil }
 
     /// False for fixes that can't work right now, like backing up while away from home.
     func canRun(_ fix: Diagnosis.Fix) -> Bool {
@@ -169,6 +189,33 @@ final class AppModel {
         guard let nas = engine.nas else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(nas.absolute(relative), forType: .string)
+    }
+
+    /// Opens a folder on the NAS in Finder, connecting to its share first if needed. Returns what went wrong, if anything.
+    func openOnNAS(_ relative: String) async -> String? {
+        guard let config = engine.nas?.config else { return "The NAS isn't set up yet." }
+        let share = NASShare(config: config)
+        func find() async -> String? {
+            await Task.detached {
+                share.localPath(of: relative, mounts: NASShare.mounted()) { FileManager.default.fileExists(atPath: $0) }
+            }.value
+        }
+        func show(_ path: String) { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path) }
+        if let path = await find() {
+            show(path)
+            return nil
+        }
+        guard let url = share.shareURL else { return "Couldn't find \(relative) in the NAS folder." }
+        NSWorkspace.shared.open(url)
+        // Finder may ask for a password first, so this waits for the share to appear.
+        for _ in 0..<60 {
+            try? await Task.sleep(for: .seconds(1))
+            if let path = await find() {
+                show(path)
+                return nil
+            }
+        }
+        return "Couldn't find this folder through \(url.absoluteString). Connect to the NAS in Finder, then try again."
     }
 }
 

@@ -50,9 +50,17 @@ struct SettingsView: View {
             settings.attach(model.engine)
             if let initialPane {
                 settings.pane = initialPane
+            } else if let requested = model.requestedSettingsPane {
+                settings.pane = requested
+                model.clearRequestedSettingsPane()
             } else if !model.location.isAllowed, !settings.isSetup {
                 settings.pane = .permissions
             }
+        }
+        .onChange(of: model.requestedSettingsPane) {
+            guard let requested = model.requestedSettingsPane else { return }
+            settings.pane = requested
+            model.clearRequestedSettingsPane()
         }
         .onChange(of: model.engine.configURL) { settings.attach(model.engine) }
         .onChange(of: model.engine.config) { settings.reload() }

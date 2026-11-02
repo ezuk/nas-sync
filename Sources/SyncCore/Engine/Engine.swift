@@ -176,10 +176,19 @@ public final class Engine {
     /// Adds a repo to `github.exclude`. Its mirror stays on the NAS.
     public func stopBackingUp(_ name: String) throws {
         try skipNewRepos([name])
+        markRepo(name, excluded: true)
+    }
+
+    /// Updates a repo's record after it was turned off or back on in the config.
+    public func markRepo(_ name: String, excluded: Bool) {
         if var r = store.repo(name) {
-            r.status = .excluded
-            r.message = "Excluded in the config."
-            try store.saveRepo(r)
+            if excluded {
+                r.status = .excluded
+                r.message = "Excluded in the config."
+            } else if r.status == .excluded {
+                r.refreshHelperStatus()
+            }
+            try? store.saveRepo(r)
         }
         historyVersion += 1
         evaluate()

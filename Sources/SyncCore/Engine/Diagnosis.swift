@@ -111,6 +111,10 @@ public struct Diagnosis: Sendable, Equatable {
             var d = explain(text, localPath: p.localPath)
             if p.source == .localClone, !d.fixes.contains(.revealClone), d.isUnrecognized { d.fixes.append(.revealClone) }
             if p.hasGitHubRemote, d.isUnrecognized { d.fixes.append(.openOnGitHub) }
+            if text.hasPrefix(noTokenMessage) {
+                d.fixes = [.stopBackingUp, .openOnGitHub]
+                if p.source == .localClone { d.fixes.append(.revealClone) }
+            }
             return d
         }
     }
@@ -234,11 +238,21 @@ public struct Diagnosis: Sendable, Equatable {
 
     // MARK: Error text
 
+    /// How the NAS helper starts its message about a repo no token can read.
+    private static let noTokenMessage = "There's no GitHub token for "
+
     /// Recognizes an error from git, rsync, ssh or the system, as stored in history.
     public static func explain(_ text: String, localPath: String? = nil) -> Diagnosis {
         let t = text.lowercased()
         func has(_ needles: String...) -> Bool { needles.contains { t.contains($0) } }
 
+        if text.contains(noTokenMessage) {
+            let owner = text.components(separatedBy: noTokenMessage).last?.components(separatedBy: " on the NAS").first ?? "<owner>"
+            return Diagnosis(title: "The NAS can't read this repo on GitHub",
+                             explanation: "The NAS has no GitHub token for \(owner), so changes made on GitHub aren't reaching it. What's already on the NAS is safe.",
+                             advice: "Save a read-only token in \(NASHelper.stateFolder)/github-token-\(owner) on the NAS, or stop backing this repo up.",
+                             fixes: [], technical: text)
+        }
         if has("bad file descriptor", "too many open files") {
             return Diagnosis(title: "NAS Sync ran out of open files",
                              explanation: "The app had too many files open at once, so it couldn't run the commands it needed. The repo itself is fine, and its copy on the NAS wasn't changed.",

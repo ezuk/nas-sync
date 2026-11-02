@@ -19,7 +19,20 @@ enum SampleData {
     static let now = Date()
     static func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
 
-    static let config = """
+    static var clonesFolder: URL { storeDirectory.appending(path: "clones") }
+
+    /// Makes folders that look like clones, so the Repos page finds the sample repos.
+    static func makeSampleClones() {
+        let remotes = ["acme/docs-site", "personal/dotfiles", "acme/firmware", "acme/qmk"]
+        for name in remotes + ["thesis"] {
+            let dotGit = clonesFolder.appending(path: name).appending(path: ".git")
+            try? FileManager.default.createDirectory(at: dotGit, withIntermediateDirectories: true)
+            let remote = remotes.contains(name) ? "[remote \"origin\"]\n\turl = git@github.com:\(name).git\n" : ""
+            try? remote.write(to: dotGit.appending(path: "config"), atomically: true, encoding: .utf8)
+        }
+    }
+
+    static var config: String { """
     [home]
     wifi = "Hearth"
 
@@ -46,11 +59,12 @@ enum SampleData {
     every = "24h"
     around = "03:00"                 # preferred time; catches up if missed
     dest = "github-backups"
-    scan = ["/tmp"]
+    scan = ["\(clonesFolder.path(percentEncoded: false))"]
+    repos = ["\(clonesFolder.appending(path: "thesis").path(percentEncoded: false))"]
     exclude = ["someone/big-fork", "vendor/*"]
-    remote_only = ["acme/keymap-tools"]
+    remote_only = ["acme/keymap-tools", "acme/old-prototype"]
 
-    """
+    """ }
 
     static func job(_ name: String, _ state: JobStatus.State, last: Date?, summary: String?, waiting: Int = 0, files: Int? = nil,
                     kind: JobStatus.Kind = .folder, progress: JobProgress? = nil, message: String? = nil) -> JobStatus {
@@ -132,6 +146,7 @@ enum SampleData {
         guard let out = outputFolder else { return }
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
+        makeSampleClones()
         try? config.write(to: configURL, atomically: true, encoding: .utf8)
         let model = AppModel.shared
         model.useConfigForSamples(configURL)
@@ -227,7 +242,7 @@ enum SampleData {
         waitingRecord.refs = ["refs/heads/main": "abc"]
         try? engine.store.saveRepo(waitingRecord)
         model.requestRepoProblems()
-        render(ReposView(), "2h-repos-problems", width: 1040, height: 520)
+        render(SettingsView(initialPane: .gitRepos), "2h-repos-problems", width: 900, height: 620)
 
         // Windows.
         s = base(.upToDate)
@@ -246,7 +261,6 @@ enum SampleData {
         render(LiveRunView(job: s.jobs[0]).frame(width: 640), "1l-live-run", width: 640, height: 360)
         render(PopoverView(), "1m-popover-comparing", width: 340)
         render(RunDetailView(run: ghRun()).frame(width: 720), "2d-github-run", width: 720, height: 560)
-        render(ReposView(), "2e-repos", width: 1040, height: 360)
         for (pane, name, height) in [(SettingsPane.nas, "1h-settings-nas", 620.0), (.allFolders, "1h-settings-folders", 900),
                                      (.folder(0), "1h-settings-folder", 900), (.gitRepos, "1h-settings-repos", 700),
                                      (.file, "1h-settings-config", 980), (.general, "1i-settings-general", 520),

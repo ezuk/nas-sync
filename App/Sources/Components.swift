@@ -88,7 +88,7 @@ struct ProblemCard: View {
     var subject: String?
     var diagnosis: Diagnosis
     var repo: RepoProblem?
-    /// For the menu: no technical details, and fixes that change the backup are left to the Repos window.
+    /// For the menu: no technical details, and fixes that change the backup are left to the Repos page.
     var compact = false
     @State private var confirming: Diagnosis.Fix?
     @State private var failure: String?
@@ -116,8 +116,8 @@ struct ProblemCard: View {
                 if compact {
                     if repo != nil {
                         Button("Details") {
-                            model.requestRepoProblems()
-                            openWindow(id: WindowID.repos)
+                            model.requestReposPage(problems: true)
+                            openWindow(id: WindowID.settings)
                             NSApp.activate()
                         }
                     } else {

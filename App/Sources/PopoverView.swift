@@ -304,8 +304,8 @@ struct PopoverView: View {
                     Button("Back Up Now") { model.engine.backUpReposNow() }.buttonStyle(.link).disabled(!model.canRun(.backUpAgain))
                 }
                 Button("Show in Repos") {
-                    model.requestRepoProblems()
-                    openAndActivate(openWindow, id: WindowID.repos)
+                    model.requestReposPage(problems: true)
+                    openAndActivate(openWindow, id: WindowID.settings)
                 }
                 .buttonStyle(.link)
             }
@@ -356,7 +356,7 @@ struct PopoverView: View {
             Divider()
             VStack(alignment: .leading, spacing: 0) {
                 sectionHeader("GitHub repos · every \(every)")
-                Button { openAndActivate(openWindow, id: WindowID.repos) } label: {
+                Button { model.requestReposPage(); openAndActivate(openWindow, id: WindowID.settings) } label: {
                     JobRow(name: count > 0 ? Format.count(count, "repo") : "GitHub repos", line: line,
                            right: StatusText.short(job.lastSuccess, now: now), color: job.dotColor)
                 }
@@ -392,7 +392,7 @@ struct PopoverView: View {
             }
             MenuRow(title: "Activity…", shortcut: "⌘L", key: "l") { openAndActivate(openWindow, id: WindowID.activity) }
             if s.github != nil {
-                MenuRow(title: "Repos…", shortcut: "⌘R", key: "r") { openAndActivate(openWindow, id: WindowID.repos) }
+                MenuRow(title: "Repos…", shortcut: "⌘R", key: "r") { model.requestReposPage(); openAndActivate(openWindow, id: WindowID.settings) }
             }
             MenuRow(title: "Edit Config…", shortcut: "⌘,", key: ",") { openAndActivate(openWindow, id: WindowID.settings) }
             MenuRow(title: "Quit NAS Sync", shortcut: "⌘Q", key: "q") { NSApp.terminate(nil) }

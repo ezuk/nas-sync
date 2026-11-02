@@ -2,10 +2,12 @@
 """NAS Sync helper. Runs on the NAS; the app and the nas-sync tool install and update it.
 
 Layout: <state>/helper/<version>-<fingerprint>/nas-sync-helper.py, with <state>/helper/current
-pointing at the active folder. Tokens are <state>/github-token-<owner>. Output is JSON.
+pointing at the active folder. Tokens are <state>/github-token-<owner>. <state>/manifest.json lists
+the repos to back up, and <state>/last-run.json reports on the latest run. Output is JSON.
 Keep this file compatible with Python 3.8 and the standard library.
 """
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -18,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 
-HELPER_VERSION = 1
+HELPER_VERSION = 2
 PROTOCOL = 1
 
 MIN_PYTHON = (3, 8)
@@ -31,6 +33,20 @@ INCOMING_MAX_AGE = 86400
 
 TOOL_ENV = dict(os.environ, LC_ALL="C", GIT_TERMINAL_PROMPT="0")
 TOOL_ENV["PATH"] = "/usr/local/bin:/var/packages/git/target/bin:" + os.environ.get("PATH", "/usr/bin:/bin")
+
+MANIFEST_VERSION = 1
+MANIFEST = os.path.join(STATE, "manifest.json")
+LAST_RUN = os.path.join(STATE, "last-run.json")
+RUN_LOCK = os.path.join(STATE, "run.lock")
+FETCH_TIMEOUT = 6 * 3600
+QUICK_TIMEOUT = 300
+# Branches and tags under these names hold work sent from a Mac. GitHub's refs never touch them.
+MAC_PREFIXES = ("refs/heads/from-mac/", "refs/tags/from-mac/")
+DELETED_PREFIX = "refs/deleted/"
+MIRROR_STATE = "nas-sync-state.json"
+# Mirrors with more than this many packs or loose objects get repacked. Nothing is dropped.
+TIDY_PACKS = 30
+TIDY_LOOSE = 5000
 
 
 def fingerprint(path=SCRIPT):
@@ -178,10 +194,322 @@ def command_activate(_args):
     return {"active": name, "previous": previous}
 
 
+# Backing up repos
+
+
+class RepoFailure(Exception):
+    """A repo couldn't be backed up. The message is shown to the user."""
+
+
+def write_json(path, value):
+    temporary = "%s.%d" % (path, os.getpid())
+    with open(temporary, "w") as f:
+        json.dump(value, f, sort_keys=True)
+    os.replace(temporary, path)
+
+
+def read_json(path, default=None):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def token_file(owner):
+    try:
+        names = os.listdir(STATE)
+    except OSError:
+        return None
+    for name in names:
+        if name.lower() == "github-token-" + owner.lower():
+            return os.path.join(STATE, name)
+    return None
+
+
+def repo_env(name, url):
+    """Git's environment for a repo. Holds the token file's path, never the token."""
+    env = dict(TOOL_ENV)
+    path = token_file(name.split("/")[0]) if url.startswith("https://github.com/") else None
+    if path:
+        quoted = "'" + path.replace("'", "'\\''") + "'"
+        credential = ('!f() { test "$1" = get && echo username=x-access-token && '
+                      'echo "password=$(tr -d \'\\r\\n\' < %s)"; }; f' % quoted)
+        env.update({"GIT_CONFIG_COUNT": "2",
+                    "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+                    "GIT_CONFIG_KEY_1": "credential.helper", "GIT_CONFIG_VALUE_1": credential})
+    return env
+
+
+def git(args, env, cwd=None, timeout=QUICK_TIMEOUT, stdin=None):
+    try:
+        r = subprocess.run(["git"] + args, cwd=cwd, env=env, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RepoFailure("git %s timed out after %d seconds" % (args[0], timeout))
+    except OSError as e:
+        raise RepoFailure("couldn't run git: %s" % e)
+    return r
+
+
+def git_ok(args, env, cwd=None, timeout=QUICK_TIMEOUT, stdin=None, step=None):
+    r = git(args, env, cwd, timeout, stdin)
+    if r.returncode != 0:
+        lines = [line for line in r.stderr.splitlines() if line.strip()]
+        detail = next((line for line in lines if line.startswith(("fatal:", "error:"))), lines[0] if lines else "exit %d" % r.returncode)
+        raise RepoFailure("%s: %s" % (step or "git " + args[0], detail))
+    return r.stdout
+
+
+def is_mac_ref(ref):
+    return ref.startswith(MAC_PREFIXES)
+
+
+def parse_refs(text):
+    refs = {}
+    for line in text.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and not parts[1].endswith("^{}"):
+            refs[parts[1]] = parts[0]
+    return refs
+
+
+def github_refs(url, env):
+    out = git_ok(["ls-remote", "--heads", "--tags", url], env, step="reading branches from GitHub")
+    return {ref: sha for ref, sha in parse_refs(out).items() if not is_mac_ref(ref)}
+
+
+def github_default_branch(url, env):
+    r = git(["ls-remote", "--symref", url, "HEAD"], env)
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] == "ref:":
+                return parts[1]
+    return None
+
+
+def mirror_refs(mirror, env):
+    out = git_ok(["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags"], env, cwd=mirror)
+    return {ref: sha for ref, sha in parse_refs(out).items() if not is_mac_ref(ref)}
+
+
+def all_ref_names(mirror, env):
+    return set(git_ok(["for-each-ref", "--format=%(refname)"], env, cwd=mirror).splitlines())
+
+
+def deleted_name(ref, day, existing):
+    """refs/deleted/<day>/heads/<branch>. A taken or clashing name moves to a -2, -3... day folder."""
+    rest = ref[len("refs/"):]
+    name = "%s%s/%s" % (DELETED_PREFIX, day, rest)
+    n = 2
+    while name in existing or any(other.startswith(name + "/") or name.startswith(other + "/") for other in existing):
+        name = "%s%s-%d/%s" % (DELETED_PREFIX, day, n, rest)
+        n += 1
+    existing.add(name)
+    return name
+
+
+def update_refs(mirror, env, commands):
+    if commands:
+        git_ok(["update-ref", "--stdin"], env, cwd=mirror, stdin="\n".join(commands) + "\n")
+
+
+def refs_fingerprint(refs):
+    text = "\n".join("%s %s" % (refs[ref], ref) for ref in sorted(refs))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def prepare_mirror(mirror, url, env):
+    if not os.path.exists(os.path.join(mirror, "HEAD")):
+        if os.path.exists(mirror) and os.listdir(mirror):
+            raise RepoFailure("%s exists but isn't a git repository" % mirror)
+        os.makedirs(mirror, exist_ok=True)
+        git_ok(["init", "--bare", "--quiet", "."], env, cwd=mirror)
+    # Git must never clean up by itself: objects only reachable from kept refs have to stay.
+    git_ok(["config", "gc.auto", "0"], env, cwd=mirror)
+    git_ok(["config", "core.logAllRefUpdates", "false"], env, cwd=mirror)
+    git_ok(["config", "remote.origin.url", url], env, cwd=mirror)
+
+
+def update_mirror(mirror, source, env, day, keep):
+    """Brings the mirror up to date with GitHub, keeping whatever GitHub deleted or rewrote."""
+    before = mirror_refs(mirror, env)
+    existing = all_ref_names(mirror, env)
+    kept, pruned, commands = [], [], []
+    for ref in sorted(before):
+        if ref not in source:
+            if keep:
+                name = deleted_name(ref, day, existing)
+                commands.append("create %s %s" % (name, before[ref]))
+                kept.append(name)
+            else:
+                pruned.append(ref)
+            commands.append("delete %s %s" % (ref, before[ref]))
+    # Before the fetch, so a new branch fix/x can replace a deleted branch fix.
+    update_refs(mirror, env, commands)
+
+    git_ok(["-c", "gc.auto=0", "fetch", "--quiet", "--force", "--no-write-fetch-head", "origin",
+            "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"],
+           env, cwd=mirror, timeout=FETCH_TIMEOUT, step="fetching from GitHub")
+
+    after = mirror_refs(mirror, env)
+    if keep:
+        commands = []
+        for ref in sorted(before):
+            if ref not in source or after.get(ref) in (None, before[ref]):
+                continue
+            is_branch = ref.startswith("refs/heads/")
+            if is_branch and git(["merge-base", "--is-ancestor", before[ref], after[ref]], env, cwd=mirror).returncode == 0:
+                continue
+            name = deleted_name(ref, day, existing)
+            commands.append("create %s %s" % (name, before[ref]))
+            kept.append(name)
+        update_refs(mirror, env, commands)
+    return kept, pruned
+
+
+def set_head(mirror, url, env, refs):
+    default = github_default_branch(url, env)
+    choice = default if default in refs else None
+    if not choice:
+        current = git(["symbolic-ref", "-q", "HEAD"], env, cwd=mirror).stdout.strip()
+        branches = sorted(ref for ref in refs if ref.startswith("refs/heads/"))
+        preferred = [ref for ref in ("refs/heads/main", "refs/heads/master") if ref in refs]
+        choice = current if current in refs else (preferred or branches or [None])[0]
+    if choice:
+        git(["symbolic-ref", "HEAD", choice], env, cwd=mirror)
+
+
+def fetch_lfs(mirror, env):
+    """Downloads the LFS files of every ref. Returns an error message, or None."""
+    r = git(["lfs", "fetch", "--all", "origin"], env, cwd=mirror, timeout=FETCH_TIMEOUT)
+    if r.returncode == 0:
+        return None
+    lines = [line for line in (r.stderr + r.stdout).splitlines() if line.strip()]
+    return lines[-1] if lines else "git lfs fetch failed (exit %d)" % r.returncode
+
+
+def tidy_mirror(mirror, env):
+    counts = {}
+    for line in git_ok(["count-objects", "-v"], env, cwd=mirror).splitlines():
+        key, _, value = line.partition(":")
+        if value.strip().isdigit():
+            counts[key.strip()] = int(value)
+    if counts.get("packs", 0) > TIDY_PACKS or counts.get("count", 0) > TIDY_LOOSE:
+        git_ok(["-c", "gc.auto=0", "-c", "pack.threads=2", "gc", "--quiet", "--prune=never"], env, cwd=mirror, timeout=FETCH_TIMEOUT)
+
+
+def folder_stats(path):
+    total, files = 0, 0
+    for folder, _, names in os.walk(path):
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(folder, name)).st_size
+                files += 1
+            except OSError:
+                pass
+    return total, files
+
+
+def back_up_repo(entry, root, day, keep):
+    name, url = entry["name"], entry["url"]
+    mirror = os.path.join(root, entry["path"])
+    env = repo_env(name, url)
+    result = {"name": name, "action": "unchanged"}
+    source = github_refs(url, env)
+    is_new = not os.path.exists(os.path.join(mirror, "HEAD"))
+    prepare_mirror(mirror, url, env)
+    state_path = os.path.join(mirror, MIRROR_STATE)
+    state = read_json(state_path, {})
+    current = mirror_refs(mirror, env)
+
+    if not source:
+        if current:
+            raise RepoFailure("GitHub reported no branches, but this repo had %d at the last backup. The mirror wasn't changed." % len(current))
+        result["action"] = "skipped"
+        result["detail"] = "empty repository, nothing to back up"
+        return result
+
+    fingerprint_now = refs_fingerprint(source)
+    refs_changed = current != source
+    if refs_changed:
+        kept, pruned = update_mirror(mirror, source, env, day, keep)
+        current = mirror_refs(mirror, env)
+        result["action"] = "new" if is_new else "changed"
+        if kept:
+            result["kept_refs"] = kept
+        if pruned:
+            result["pruned_refs"] = pruned
+    set_head(mirror, url, env, current)
+
+    lfs_error = None
+    if refs_changed or state.get("lfs_done_for") != fingerprint_now:
+        lfs_error = fetch_lfs(mirror, env)
+        state["lfs_done_for"] = None if lfs_error else fingerprint_now
+        write_json(state_path, state)
+    if refs_changed:
+        tidy_mirror(mirror, env)
+        git_ok(["fsck", "--connectivity-only", "--no-dangling", "--no-progress"], env, cwd=mirror, timeout=FETCH_TIMEOUT, step="checking the mirror")
+
+    lfs_bytes, lfs_files = folder_stats(os.path.join(mirror, "lfs", "objects"))
+    result.update(branches=sum(ref.startswith("refs/heads/") for ref in current),
+                  tags=sum(ref.startswith("refs/tags/") for ref in current),
+                  lfs_files=lfs_files, lfs_bytes=lfs_bytes, bytes=folder_stats(mirror)[0])
+    if lfs_error:
+        result["action"] = "warning"
+        result["detail"] = "Git LFS files weren't all downloaded: %s" % lfs_error
+    return result
+
+
+def command_run(_args):
+    manifest = read_json(MANIFEST)
+    if not manifest:
+        raise SystemExit("no manifest at %s" % MANIFEST)
+    if manifest.get("version") != MANIFEST_VERSION:
+        raise SystemExit("manifest version %s isn't supported" % manifest.get("version"))
+    with open(RUN_LOCK, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return {"status": "already running"}
+        return run_manifest(manifest)
+
+
+def run_manifest(manifest):
+    root = manifest["mirrors"]
+    keep = manifest.get("on_remote_delete", "keep") == "keep"
+    day = time.strftime("%Y-%m-%d")
+    report = {"status": "running", "helper_version": HELPER_VERSION, "started": now_iso(), "total": len(manifest["repos"]), "repos": []}
+    write_json(LAST_RUN, report)
+    for entry in manifest["repos"]:
+        started = time.time()
+        report["current"] = entry["name"]
+        write_json(LAST_RUN, report)
+        try:
+            result = back_up_repo(entry, root, day, keep)
+        except RepoFailure as e:
+            result = {"name": entry["name"], "action": "failed", "detail": str(e)}
+        except Exception as e:  # One repo's surprise must not stop the others.
+            result = {"name": entry["name"], "action": "failed", "detail": "%s: %s" % (type(e).__name__, e)}
+        result["seconds"] = round(time.time() - started, 1)
+        report["repos"].append(result)
+    report.pop("current", None)
+    report["status"] = "finished"
+    report["finished"] = now_iso()
+    write_json(LAST_RUN, report)
+    return report
+
+
 COMMANDS = {
     "version": lambda _args: dict(identity(), python=".".join(str(n) for n in sys.version_info[:3])),
     "check": command_check,
     "activate": command_activate,
+    "run": command_run,
 }
 
 

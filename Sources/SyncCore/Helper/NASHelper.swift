@@ -148,6 +148,88 @@ public struct HelperReport: Sendable, Codable, Equatable {
     }
 }
 
+/// The list of repos the helper backs up, saved on the NAS.
+public struct HelperManifest: Sendable, Codable, Equatable {
+    public struct Repo: Sendable, Codable, Equatable {
+        public var name: String
+        public var url: String
+        /// Inside the mirrors folder, like `acme/app.git`.
+        public var path: String
+    }
+
+    public static let currentVersion = 1
+    /// Where the helper's mirrors go inside the GitHub backup folder. Separate from the app's `mirrors`, which
+    /// the app's uploads overwrite.
+    public static let mirrorsFolder = "mirrors-v2"
+
+    public var version = HelperManifest.currentVersion
+    /// Absolute path on the NAS.
+    public var mirrors: String
+    public var onRemoteDelete: String
+    public var repos: [Repo]
+
+    enum CodingKeys: String, CodingKey {
+        case version, mirrors, repos
+        case onRemoteDelete = "on_remote_delete"
+    }
+
+    /// The config's repos that are on GitHub. With `only`, just the named ones. Names already in `store` keep their paths.
+    public static func build(config: GitHubConfig, nas: NAS, store: Store, only: Set<String>? = nil) -> HelperManifest {
+        let backup = GitHubBackup(config: config, nas: nas, store: store)
+        let known = Dictionary(store.repos().map { ($0.fullName.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        var claimed = GitHubBackup.claimedMirrorPaths(known.values)
+        let wanted = only.map { Set($0.map { $0.lowercased() }) }
+        let repos = RepoDiscovery.targets(config: config).targets.compactMap { t -> Repo? in
+            guard t.hasGitHubRemote else { return nil }
+            let path = backup.assignMirrorPath(t, existing: known[t.fullName.lowercased()], claimed: &claimed)
+            if let wanted, !wanted.contains(t.fullName.lowercased()) { return nil }
+            return Repo(name: t.fullName, url: "https://github.com/\(t.fullName).git", path: path)
+        }
+        return HelperManifest(mirrors: nas.absolute("\(config.dest)/\(mirrorsFolder)"), onRemoteDelete: config.onRemoteDelete.rawValue, repos: repos)
+    }
+}
+
+/// What the helper last did, read from `last-run.json` on the NAS.
+public struct HelperRunReport: Sendable, Codable, Equatable {
+    public struct Repo: Sendable, Codable, Equatable, Identifiable {
+        public var name: String
+        /// new, changed, unchanged, skipped, warning or failed
+        public var action: String
+        public var detail: String?
+        public var branches: Int?
+        public var tags: Int?
+        public var lfsFiles: Int?
+        public var lfsBytes: Int64?
+        public var bytes: Int64?
+        public var seconds: Double?
+        public var keptRefs: [String]?
+
+        public var id: String { name }
+
+        enum CodingKeys: String, CodingKey {
+            case name, action, detail, branches, tags, bytes, seconds
+            case lfsFiles = "lfs_files"
+            case lfsBytes = "lfs_bytes"
+            case keptRefs = "kept_refs"
+        }
+    }
+
+    public var status: String
+    public var helperVersion: Int?
+    public var started: Date?
+    public var finished: Date?
+    public var total: Int?
+    public var current: String?
+    public var repos: [Repo]
+
+    public var isFinished: Bool { status == "finished" }
+
+    enum CodingKeys: String, CodingKey {
+        case status, started, finished, total, current, repos
+        case helperVersion = "helper_version"
+    }
+}
+
 public enum HelperError: Error, Sendable, Equatable, CustomStringConvertible {
     /// SSH itself failed, so nothing is known about the helper.
     case unreachable(String)
@@ -257,6 +339,33 @@ public struct NASHelper: Sendable {
                 return HelperReport(state: .appTooOld, installedVersion: installed.version, bundledVersion: bundled.version, checks: checks)
             }
         }
+    }
+
+    // MARK: Backing up
+
+    private var manifestPath: String { "\(Self.stateFolder)/manifest.json" }
+    private var lastRunPath: String { "\(Self.stateFolder)/last-run.json" }
+
+    /// Saves the list of repos where scheduled runs will find it.
+    public func save(_ manifest: HelperManifest) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try nas.write(try encoder.encode(manifest), to: manifestPath)
+    }
+
+    /// Starts a run on the NAS and returns right away. It carries on if the connection drops.
+    public func startRun() throws {
+        let log = NAS.quote(nas.absolute("\(Self.stateFolder)/run.log"))
+        let script = NAS.quote(currentScript)
+        try nas.shell("PATH=/usr/bin:/bin:/usr/local/bin:$PATH; export PATH; nohup python3 \(script) run > \(log) 2>&1 < /dev/null &")
+    }
+
+    /// The latest run's report, or nil before the first one.
+    public func lastRun() throws -> HelperRunReport? {
+        let path = NAS.quote(nas.absolute(lastRunPath))
+        let r = try nas.shellRaw("test -f \(path) && cat \(path)")
+        if nas.isRemote, r.status == Self.sshFailure { throw HelperError.unreachable(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        return r.status == 0 ? Self.decode(HelperRunReport.self, r.stdout) : nil
     }
 
     // MARK: Install and update

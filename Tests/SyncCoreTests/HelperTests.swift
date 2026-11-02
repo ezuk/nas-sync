@@ -5,6 +5,7 @@ import Testing
 /// Every released helper version and its fingerprint. A changed script needs a new version and a new line here.
 private let releasedHelpers = [
     1: "b4df6ae1131c96d02e38caadd5c12cc8fdc970ae75c5c48babfdf1511ce5056c",
+    2: "8d8605de4f47203070189a2d83dc110ee52b8aadbcbfb08e61f5caf3206f357a",
 ]
 
 /// A local folder standing in for the NAS.

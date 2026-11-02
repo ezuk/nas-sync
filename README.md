@@ -329,6 +329,8 @@ swift run nas-sync run github --dry-run -v     # show which repos would be backe
 swift run nas-sync mirror [repo]               # where each repo's mirror is on the NAS, and the git clone command
 swift run nas-sync helper status               # the helper on the NAS and its health, changing nothing
 swift run nas-sync helper install              # install or update the helper on the NAS if needed
+swift run nas-sync helper run --only a/b --wait  # back up a repo from GitHub on the NAS, into mirrors-v2
+swift run nas-sync helper report               # the helper's latest run
 ```
 
 ## Troubleshooting

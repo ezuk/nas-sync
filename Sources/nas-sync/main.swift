@@ -38,6 +38,9 @@ func usage() {
       mirror [repo]                show where each repo's git mirror is on the NAS and how to clone it
       helper status [--json]       show the helper on the NAS and its health, without changing anything
       helper install [--json]      install or update the helper on the NAS if needed, then show its health
+      helper run --only a/b,c/d [--wait]
+                                   back up these repos from GitHub on the NAS, into a separate folder
+      helper report                show the helper's latest run
       unpack <archive.bundle.xz> [out]
                                    decompress an archive made by older versions to a .bundle you can git clone
     """)
@@ -184,6 +187,55 @@ case "helper":
     if case .failure(let problem) = nas.check() { fail("Can't use the NAS: \(problem)") }
     let helper = NASHelper(nas: nas)
     let started = Date()
+    func printRunReport(_ r: HelperRunReport) {
+        let progress = r.isFinished ? "finished" : "running, \(r.repos.count) of \(r.total ?? 0) done\(r.current.map { ", on \($0)" } ?? "")"
+        print("Helper run: \(progress)")
+        for repo in r.repos {
+            var parts = ["\(repo.branches ?? 0) branches", "\(repo.tags ?? 0) tags"]
+            if let size = repo.bytes { parts.append(Format.bytes(size)) }
+            if let files = repo.lfsFiles, files > 0 { parts.append("\(Format.count(files, "LFS file")) (\(Format.bytes(repo.lfsBytes ?? 0)))") }
+            if let kept = repo.keptRefs, !kept.isEmpty { parts.append("\(Format.count(kept.count, "ref")) kept") }
+            if let seconds = repo.seconds { parts.append(Format.duration(seconds)) }
+            print("  \(repo.action.padding(toLength: 9, withPad: " ", startingAt: 0)) \(repo.name): \(parts.joined(separator: ", "))")
+            if let detail = repo.detail { print("            \(detail)") }
+        }
+    }
+    if args.dropFirst().first == "report" {
+        do {
+            guard let r = try helper.lastRun() else { fail("The helper hasn't run yet.") }
+            printRunReport(r)
+        } catch { fail("\(error)") }
+        exit(0)
+    }
+    if args.dropFirst().first == "run" {
+        guard let only = option("--only") else { fail("usage: nas-sync helper run --only owner/repo,owner/repo [--wait]") }
+        let wait = flag("--wait")
+        guard let gh = config.githubSettings else { fail("There's no [github] section in the config.") }
+        let names = Set(only.split(separator: ",").map(String.init))
+        do {
+            let health = try helper.ensure()
+            guard health.state == .ready else { fail("The helper isn't ready: \(health.error ?? health.state.rawValue)") }
+            if health.change != nil, let run = health.runRecord(started: started) { _ = try? openStore().saveRun(run) }
+            let manifest = HelperManifest.build(config: gh, nas: nas, store: openStore(), only: names)
+            let found = Set(manifest.repos.map { $0.name.lowercased() })
+            let missing = names.filter { !found.contains($0.lowercased()) }
+            if !missing.isEmpty { fail("Not backed up by this config: \(missing.sorted().joined(separator: ", "))") }
+            try helper.save(manifest)
+            let last = try helper.lastRun()
+            let previous = last?.isFinished == true ? last?.started : nil
+            try helper.startRun()
+            print("Started on the NAS: \(Format.count(manifest.repos.count, "repo")), into \(manifest.mirrors)")
+            guard wait else { exit(0) }
+            while true {
+                Thread.sleep(forTimeInterval: 5)
+                guard let r = try? helper.lastRun(), r.started != previous else { continue }
+                if r.isFinished {
+                    printRunReport(r)
+                    exit(r.repos.contains { $0.action == "failed" } ? 1 : 0)
+                }
+            }
+        } catch { fail("\(error)") }
+    }
     let report: HelperReport
     do {
         switch args.dropFirst().first {
@@ -191,7 +243,7 @@ case "helper":
         case "install":
             report = try helper.ensure()
             if report.change != nil || report.state == .failed, let run = report.runRecord(started: started) { _ = try? openStore().saveRun(run) }
-        default: fail("usage: nas-sync helper status|install [--json]")
+        default: fail("usage: nas-sync helper status|install|run|report")
         }
     } catch {
         fail("\(error)")

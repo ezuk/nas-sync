@@ -353,7 +353,7 @@ struct PopoverView: View {
         return VStack(alignment: .leading, spacing: 0) {
             Divider()
             VStack(alignment: .leading, spacing: 0) {
-                sectionHeader("GitHub repos · every \(every)")
+                sectionHeader(model.engine.config?.github?.helperRepos.isEmpty == false ? "GitHub repos" : "GitHub repos · every \(every)")
                 Button { model.requestReposPage(); openAndActivate(openWindow, id: WindowID.settings) } label: {
                     JobRow(name: count > 0 ? Format.count(count, "repo") : "GitHub repos", line: line,
                            right: StatusText.short(status.reposLastBackedUp, now: now), color: job.dotColor)

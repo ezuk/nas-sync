@@ -734,6 +734,63 @@ private extension GitReposPane.Row.RepoState {
 }
 
 /// Every repo the config would back up or has backed up: where it comes from, the state of its mirror, and its problems.
+/// The newest commits in a repo's mirror, read from the NAS.
+struct MirrorCommitsView: View {
+    /// The mirror, relative to the NAS base folder.
+    var path: String
+    @Environment(AppModel.self) private var model
+    @State private var commits: [MirrorCommit]?
+    @State private var failure: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Newest commits on the NAS, across all branches").font(.system(size: 11)).foregroundStyle(.secondary)
+            if let failure {
+                Text(failure).font(.system(size: 12)).foregroundStyle(Palette.errorText)
+            } else if let commits {
+                if commits.isEmpty {
+                    Text("This mirror has no commits.").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                ForEach(commits) { commit in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(commit.shortSHA).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary).help(commit.sha)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(commit.subject).font(.system(size: 12)).lineLimit(2).help(commit.subject)
+                            Text(([commit.author, commit.date.formatted(date: .abbreviated, time: .shortened)] + commit.refs).joined(separator: " · "))
+                                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        }
+                    }
+                }
+                .textSelection(.enabled)
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading from the NAS…").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+        .task(id: path) { await load() }
+    }
+
+    private func load() async {
+        commits = nil
+        failure = nil
+        guard let nas = model.engine.nas else {
+            failure = "The NAS isn't set up yet."
+            return
+        }
+        let path = path
+        let result = await Task.detached { Result { try nas.recentCommits(inMirror: path) } }.value
+        switch result {
+        case .success(let found): commits = found
+        case .failure(let error): failure = error.localizedDescription
+        }
+    }
+}
+
 struct GitReposPane: View {
     @Environment(SettingsModel.self) private var s
     @Environment(AppModel.self) private var model
@@ -741,7 +798,7 @@ struct GitReposPane: View {
     @State private var records: [String: RepoRecord] = [:]
     @State private var filter: Filter = .all
     @State private var search = ""
-    @State private var openProblem: Row.ID?
+    @State private var openRow: Row.ID?
     @State private var draft = ""
     @State private var message: String?
     @State private var openError: String?
@@ -777,7 +834,7 @@ struct GitReposPane: View {
         let on = s.githubOn
         SettingsPage(title: "Repos", subtitle: "Every repo that gets backed up, where it comes from and the state of its copy on the NAS.") {
             GitOffNote()
-            SettingsGroup(footer: "Each repo is one git mirror on the NAS. Work that's only on this Mac is in from-mac/ branches, and branches and tags deleted or force-pushed at the source stay under refs/deleted. Repos from this Mac don't need a GitHub remote; ones without one go in the \(GitHubConfig.localGroup) folder. Turning a repo off adds it to the skip list in Config; its copy on the NAS is kept.",
+            SettingsGroup(footer: "Each repo is one git mirror on the NAS. Work that's only on this Mac is in from-mac/ branches, and branches and tags deleted or force-pushed at the source stay under refs/deleted. Repos from this Mac don't need a GitHub remote; ones without one go in the \(GitHubConfig.localGroup) folder. Turning a repo off adds it to the skip list in Config; its copy on the NAS is kept. Click a repo to see its newest commits on the NAS.",
                           dimmed: !on) {
                 VStack(spacing: 0) {
                     if let found {
@@ -906,38 +963,45 @@ struct GitReposPane: View {
         case .on: row.record?.message ?? (row.noRemote ? "No GitHub remote. The NAS has the only other copy" : nil)
         }
         let problem = row.problem
-        let isOpen = problem != nil && openProblem == row.id
+        let mirror = row.record.flatMap { GitHubBackup.nasMirrorPath(dest: g.dest, record: $0) }
+        let canOpen = problem != nil || mirror != nil
+        let isOpen = canOpen && openRow == row.id
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                HStack(spacing: 12) {
-                    HStack(alignment: .top, spacing: 7) {
-                        StatusDot(color: color(row)).padding(.top, 4)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 4) {
-                                Text(row.name).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.middle)
-                                if problem != nil {
-                                    Image(systemName: isOpen ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                Button {
+                    if canOpen { openRow = isOpen ? nil : row.id }
+                } label: {
+                    HStack(spacing: 12) {
+                        HStack(alignment: .top, spacing: 7) {
+                            StatusDot(color: color(row)).padding(.top, 4)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 4) {
+                                    Text(row.name).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                                    if canOpen {
+                                        Image(systemName: isOpen ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                                    }
                                 }
+                                if let note { Text(note).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true).help(note) }
+                                tags(row)
                             }
-                            if let note { Text(note).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true).help(note) }
-                            tags(row)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(row.fromMac ? "This Mac" : "GitHub").font(.system(size: 12))
+                            Text(row.location).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.head).help(row.location)
+                        }
+                        .frame(width: Self.sourceWidth, alignment: .leading)
+                        Text(row.record?.mirrorUpdated.map { StatusText.dayAndTime($0) } ?? "–")
+                            .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
+                            .frame(width: Self.updatedWidth, alignment: .leading)
+                            .help(row.record?.lastChangeSeen.map { "Last change seen \(StatusText.dayAndTime($0))" } ?? "")
+                        Text(row.record?.sizeOnNAS.map(Self.size) ?? "–").font(.system(size: 12)).monospacedDigit().frame(width: Self.sizeWidth, alignment: .trailing)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(row.fromMac ? "This Mac" : "GitHub").font(.system(size: 12))
-                        Text(row.location).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.head).help(row.location)
-                    }
-                    .frame(width: Self.sourceWidth, alignment: .leading)
-                    Text(row.record?.mirrorUpdated.map { StatusText.dayAndTime($0) } ?? "–")
-                        .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
-                        .frame(width: Self.updatedWidth, alignment: .leading)
-                        .help(row.record?.lastChangeSeen.map { "Last change seen \(StatusText.dayAndTime($0))" } ?? "")
-                    Text(row.record?.sizeOnNAS.map(Self.size) ?? "–").font(.system(size: 12)).monospacedDigit().frame(width: Self.sizeWidth, alignment: .trailing)
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
-                .onTapGesture { if problem != nil { openProblem = isOpen ? nil : row.id } }
+                .buttonStyle(.plain)
+                .disabled(!canOpen)
                 HStack {
                     switch row.state {
                     case .skippedBy(let p):
@@ -950,13 +1014,16 @@ struct GitReposPane: View {
                 }
                 .frame(width: Self.toggleWidth, alignment: .trailing)
             }
+            .opacity(row.state == .off || row.state.isSkipped ? 0.55 : 1)
             if isOpen, let problem {
                 ProblemCard(subject: problem.fullName, diagnosis: Diagnosis.forRepo(problem), repo: problem).id(problem.fullName)
+            }
+            if isOpen, let mirror {
+                MirrorCommitsView(path: mirror)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .opacity(row.state == .off || row.state.isSkipped ? 0.55 : 1)
         .contextMenu { rowMenu(row, config: g) }
     }
 
@@ -1064,7 +1131,7 @@ struct GitReposPane: View {
         filter = .problems
         search = ""
         let problems = records.values.filter { $0.problem != nil }.sorted { $0.fullName.lowercased() < $1.fullName.lowercased() }
-        openProblem = (problems.first { $0.status == .failed } ?? problems.first)?.fullName.lowercased()
+        openRow = (problems.first { $0.status == .failed } ?? problems.first)?.fullName.lowercased()
     }
 
     private func adders(_ g: GitHubConfig) -> some View {

@@ -324,7 +324,7 @@ git lfs pull
 
 A mirror the app made without the helper has no LFS files, and needs no `--upload-pack` if your NAS's SSH commands can already find git. If git stops with `git-upload-pack: command not found`, use the rsync line and `git clone app.git`.
 
-The clone has every branch and tag as of the last backup. Work that was only on your Mac is in branches and tags named `from-mac/<name>`. Branches and tags that were deleted or force-pushed at the source are kept under `refs/deleted/`. To see them, clone with `--mirror` and run `git for-each-ref refs/deleted`, or bring them into a normal clone with `git fetch origin 'refs/deleted/*:refs/deleted/*'`. On the Repos page in Settings, right-click a repo and choose Open Mirror on NAS to see it in Finder, or Copy Mirror Path on NAS for its full path. Click a column heading to sort the list.
+The clone has every branch and tag as of the last backup. Work that was only on your Mac is in branches and tags named `from-mac/<name>`. Branches and tags that were deleted or force-pushed at the source are kept under `refs/deleted/`. To see them, clone with `--mirror` and run `git for-each-ref refs/deleted`, or bring them into a normal clone with `git fetch origin 'refs/deleted/*:refs/deleted/*'`. On the Repos page in Settings, right-click a repo and choose Open Mirror on NAS to see it in Finder, or Copy Mirror Path on NAS for its full path. Click a column heading to sort the list. Click a repo to see its five newest commits as they are on the NAS, with their hash, message, author and time.
 
 Archives from older versions (`github-backups/bundles/.../*.bundle.xz`) turn back into a repo in two steps:
 

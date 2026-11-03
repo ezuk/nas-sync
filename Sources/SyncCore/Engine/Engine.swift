@@ -59,6 +59,8 @@ public struct EngineEnvironment: Sendable {
     public var helperRun: @Sendable (NAS) throws -> HelperRunReport?
     /// Saves the helper's list of repos and starts a run on the NAS.
     public var startHelperRun: @Sendable (GitHubConfig, NAS, Store) throws -> Void
+    /// Does the same only if the list on the NAS differs from the config. Returns whether it did.
+    public var updateHelperList: @Sendable (GitHubConfig, NAS, Store) throws -> Bool
 
     public init(
         wifiName: @escaping @Sendable () -> String?, power: @escaping @Sendable () -> PowerState,
@@ -70,6 +72,13 @@ public struct EngineEnvironment: Sendable {
             let helper = NASHelper(nas: nas)
             try helper.save(HelperManifest.build(config: config, nas: nas, store: store))
             try helper.startRun()
+        },
+        updateHelperList: @escaping @Sendable (GitHubConfig, NAS, Store) throws -> Bool = { config, nas, store in
+            let helper = NASHelper(nas: nas)
+            let manifest = HelperManifest.build(config: config, nas: nas, store: store)
+            guard try helper.saveIfChanged(manifest) else { return false }
+            if !manifest.repos.isEmpty { try helper.startRun() }
+            return true
         }
     ) {
         self.wifiName = wifiName
@@ -79,6 +88,7 @@ public struct EngineEnvironment: Sendable {
         self.helper = helper
         self.helperRun = helperRun
         self.startHelperRun = startHelperRun
+        self.updateHelperList = updateHelperList
     }
 
     public static let live = EngineEnvironment(
@@ -145,6 +155,10 @@ public final class Engine {
     @ObservationIgnored private var readingHelperRun = false
     @ObservationIgnored private var lastHelperRunRead: Date?
     @ObservationIgnored private var helperRunRequested: Date?
+    @ObservationIgnored private var helperListOutdated = false
+    @ObservationIgnored private var updatingHelperList = false
+    @ObservationIgnored private var helperListRetry: Date?
+    static let helperListRetryDelay: TimeInterval = 300
     /// How often the helper's report is read: while a run is going or was just asked for, and otherwise.
     static let helperRunActiveRead: TimeInterval = 60
     static let helperRunIdleRead: TimeInterval = 900
@@ -281,6 +295,7 @@ public final class Engine {
     private func apply(_ new: AppConfig) {
         let old = config
         config = new
+        if old?.github != new.github, new.github?.helperRepos.isEmpty == false { helperListOutdated = true }
         if old?.nas != new.nas || nas == nil {
             nas = NAS(config: new.nas)
             status.nasConnected = false
@@ -511,6 +526,7 @@ public final class Engine {
         if let config, let nas, isHome, status.pausedUntil == nil { checkConnectionIfNeeded(nas, config: config, now: now) }
         if let config, let nas, isHome, status.nasConnected, status.pausedUntil == nil {
             readHelperRunIfDue(now: now)
+            updateHelperListIfDue(now: now)
             startDueJobs(config, nas: nas, power: power, now: now)
         }
         refreshJobs(now: now, power: power)
@@ -648,6 +664,36 @@ public final class Engine {
             historyVersion += 1
         }
         readHelperRun()
+    }
+
+    /// Brings the helper's list of repos on the NAS in line with the config, once no repo backup is running.
+    private func updateHelperListIfDue(now: Date) {
+        guard helperListOutdated, !updatingHelperList, running[Self.githubJob] == nil,
+              let gh = config?.github, let nas, nas.isRemote || checksHelperOnLocalFolder else { return }
+        if let retry = helperListRetry, now < retry { return }
+        helperListOutdated = false
+        updatingHelperList = true
+        let env = self.env, store = self.store
+        Task.detached(priority: .utility) { [weak self] in
+            let result = Result { try env.updateHelperList(gh, nas, store) }
+            await MainActor.run { self?.helperListUpdated(result) }
+        }
+    }
+
+    private func helperListUpdated(_ result: Result<Bool, any Error>) {
+        updatingHelperList = false
+        switch result {
+        case .success(let changed):
+            helperListRetry = nil
+            if changed {
+                helperRunRequested = Date()
+                readHelperRun()
+            }
+        case .failure:
+            helperListOutdated = true
+            helperListRetry = Date().addingTimeInterval(Self.helperListRetryDelay)
+        }
+        evaluate()
     }
 
     private func readHelperRunIfDue(now: Date) {

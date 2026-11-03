@@ -177,6 +177,12 @@ public struct HelperManifest: Sendable, Codable, Equatable {
         case onRemoteDelete = "on_remote_delete"
     }
 
+    var sortedByName: HelperManifest {
+        var sorted = self
+        sorted.repos.sort { $0.name < $1.name }
+        return sorted
+    }
+
     /// The repos the helper should back up: those matching `helper_repos`, leaving out new clones that are still
     /// waiting for approval. With `only`, just the named ones. Names already in `store` keep their paths.
     public static func build(config: GitHubConfig, nas: NAS, store: Store, only: Set<String>? = nil) -> HelperManifest {
@@ -427,6 +433,16 @@ public struct NASHelper: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try nas.write(try encoder.encode(manifest), to: manifestPath)
+    }
+
+    /// Saves the list of repos unless the one on the NAS already matches. Returns whether it saved.
+    public func saveIfChanged(_ manifest: HelperManifest) throws -> Bool {
+        let path = NAS.quote(nas.absolute(manifestPath))
+        let r = try nas.shellRaw("test -f \(path) && cat \(path)")
+        if nas.isRemote, r.status == Self.sshFailure { throw HelperError.unreachable(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        if r.status == 0, let saved = Self.decode(HelperManifest.self, r.stdout), saved.sortedByName == manifest.sortedByName { return false }
+        try save(manifest)
+        return true
     }
 
     /// Starts a run on the NAS and returns right away. It carries on if the connection drops.

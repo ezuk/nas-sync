@@ -244,6 +244,36 @@ private func makeEngine(_ world: FakeWorld) throws -> Engine {
         #expect(try engine.store.recentRuns(kinds: [.helper]).first?.summary == "Updated NAS helper to version 2")
     }
 
+    @Test func aRepoListChangeReachesTheNASRightAway() async throws {
+        let world = try FakeWorld()
+        let original = try String(contentsOf: world.configURL, encoding: .utf8)
+        let section = "\n[github]\ndest = \"gh\"\nhelper_repos = [\"*/*\"]\n"
+        try (original + section).write(to: world.configURL, atomically: true, encoding: .utf8)
+        let lists = LockedBox<[[String]]>([])
+        var environment = world.environment
+        environment.helper = { _ in HelperReport(state: .ready, installedVersion: 1, bundledVersion: 1) }
+        environment.helperRun = { _ in nil }
+        environment.updateHelperList = { config, _, _ in
+            lists.set(lists.get() + [config.exclude])
+            return false
+        }
+        let engine = Engine(configURL: world.configURL, store: try Store(directory: world.state), environment: environment)
+        engine.locationAllowed = true
+        engine.checksHelperOnLocalFolder = true
+        engine.start()
+        defer { engine.stop() }
+        await waitUntil { lists.get().count == 1 }
+
+        engine.reloadConfig()
+        await waitUntil(1) { false }
+        #expect(lists.get().count == 1)
+
+        try (original + section + "exclude = [\"acme/old\"]\n").write(to: world.configURL, atomically: true, encoding: .utf8)
+        engine.reloadConfig()
+        await waitUntil { lists.get().count == 2 }
+        #expect(lists.get().last == ["acme/old"])
+    }
+
     @Test func doesntCheckTheHelperWithoutGitHubBackups() async throws {
         let world = try FakeWorld()
         let calls = LockedBox(0)

@@ -647,6 +647,21 @@ private final class HelperWorld {
         #expect(targets[0].isListed)
     }
 
+    @Test func theRepoListIsOnlySavedWhenItChanges() throws {
+        let w = try HelperWorld()
+        func repo(_ name: String) -> HelperManifest.Repo {
+            HelperManifest.Repo(name: name, url: "https://github.com/\(name).git", path: "\(name).git")
+        }
+        func list(_ names: String...) -> HelperManifest {
+            HelperManifest(mirrors: w.mirrors.path(percentEncoded: false), onRemoteDelete: "keep", repos: names.map(repo))
+        }
+        #expect(try w.helper.saveIfChanged(list("o/a", "o/b")))
+        #expect(try !w.helper.saveIfChanged(list("o/a", "o/b")))
+        #expect(try !w.helper.saveIfChanged(list("o/b", "o/a")))
+        #expect(try w.helper.saveIfChanged(list("o/a")))
+        #expect(try !w.helper.saveIfChanged(list("o/a")))
+    }
+
     @Test func aRunSummaryForActivity() {
         let repos = [HelperRunReport.Repo(name: "a/b", action: "changed"), HelperRunReport.Repo(name: "a/c", action: "unchanged"),
                      HelperRunReport.Repo(name: "a/d", action: "failed", detail: "no token")]

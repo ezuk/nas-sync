@@ -161,6 +161,13 @@ public struct StatusSnapshot: Sendable, Codable, Equatable {
     /// The helper's latest run, when repos use it.
     public var helperRun: HelperRunReport?
 
+    /// When repos were last backed up, by this Mac's run or by the NAS helper's if that's newer.
+    public var reposLastBackedUp: Date? {
+        let mac = githubJob?.lastSuccess
+        guard let run = helperRun, run.isFinished, run.failedRepos.count < run.repos.count, let finished = run.finished else { return mac }
+        return max(mac ?? finished, finished)
+    }
+
     public static func initial(configPath: String) -> StatusSnapshot {
         StatusSnapshot(state: .starting, wifiName: nil, homeWiFi: nil, isHome: false, locationAllowed: false, nasConnected: false,
                        nasLocation: nil, connectSteps: [], connectError: nil, lastConnectCheck: nil, onBattery: false, batteryPercent: nil,
@@ -215,6 +222,31 @@ public enum StatusText {
         if s < 3600 { return "\(Int(s / 60)) min ago" }
         if s < 6 * 3600 { return "\(Int(s / 3600)) hr ago" }
         return dayAndTime(date, now: now)
+    }
+
+    /// The GitHub row's line when no run is active. With the NAS helper it gives the state of the repos from the
+    /// helper's latest run. Nil when the last run failed outright.
+    public static func repoLine(_ s: StatusSnapshot, lastRun: RunRecord?, nextRun: Date?) -> String? {
+        if lastRun?.outcome == .failed { return nil }
+        var parts: [String]
+        if let helper = s.helperRun {
+            if !helper.isFinished { return "The NAS is checking GitHub" }
+            let c = helper.runRecord().counts
+            let failed = c.failed + (lastRun?.counts.failed ?? 0)
+            let waiting = s.github?.waitingForMirror ?? 0
+            let total = s.github?.repoCount ?? c.total
+            parts = ["\(max(0, total - failed - c.skipped - waiting)) up to date"]
+            if failed > 0 { parts.append("\(failed) failed") }
+            if waiting > 0 { parts.append("\(waiting) waiting for a first backup") }
+            if c.skipped > 0 { parts.append("\(c.skipped) skipped") }
+        } else {
+            guard let c = lastRun?.counts else { return nil }
+            parts = ["\(c.copied) backed up", "\(c.unchanged) unchanged"]
+            if c.failed > 0 { parts.append("\(c.failed) failed") }
+            if c.skipped > 0 { parts.append("\(c.skipped) skipped") }
+            if let nextRun { parts.append("next at \(nextRun.formatted(date: .omitted, time: .shortened))") }
+        }
+        return parts.joined(separator: " · ")
     }
 
     /// "24h", "6h", "2d", "30m".
@@ -309,11 +341,11 @@ public enum StatusText {
                 return Headline(title: "Backed up, with a problem", detail: "\(job.name): \(job.lastSummary ?? "needs a look")")
             }
             if let gh, !folders.isEmpty {
-                let ghText = gh.lastSuccess.map { "GitHub repos \(relativeDay($0, now: now))" } ?? "GitHub repos not backed up yet"
+                let ghText = s.reposLastBackedUp.map { "GitHub repos \(relativeDay($0, now: now))" } ?? "GitHub repos not backed up yet"
                 return Headline(title: "Everything is backed up", detail: "Folders \(relative(lastFolder, now: now)). \(ghText).")
             }
             if let gh {
-                return Headline(title: "Repos are backed up", detail: "Last run \(relative(gh.lastSuccess, now: now)).")
+                return Headline(title: "Repos are backed up", detail: "Last run \(relative(s.reposLastBackedUp, now: now)).")
             }
             let title = lastFolder.map { "Backed up \(relative($0, now: now))" } ?? "Watching for changes"
             let detail = folders.count == 1 ? "\(folders[0].name) is on the NAS." : "All \(folders.count) folders are on the NAS."

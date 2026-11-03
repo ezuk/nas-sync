@@ -347,10 +347,8 @@ struct PopoverView: View {
         let count = status.github?.repoCount ?? 0
         let last = model.engine.lastGitHubRun
         var line = StatusText.jobLine(job, now: now)
-        if job.state == .idle, let last, last.outcome != .failed {
-            line = "\(last.counts.copied) backed up · \(last.counts.unchanged) unchanged"
-            if last.counts.skipped > 0 { line += " · \(last.counts.skipped) skipped" }
-            if let next = job.nextRun { line += " · next at \(next.formatted(date: .omitted, time: .shortened))" }
+        if job.state == .idle, let summary = StatusText.repoLine(status, lastRun: last, nextRun: job.nextRun) {
+            line = summary
         }
         return VStack(alignment: .leading, spacing: 0) {
             Divider()
@@ -358,7 +356,7 @@ struct PopoverView: View {
                 sectionHeader("GitHub repos · every \(every)")
                 Button { model.requestReposPage(); openAndActivate(openWindow, id: WindowID.settings) } label: {
                     JobRow(name: count > 0 ? Format.count(count, "repo") : "GitHub repos", line: line,
-                           right: StatusText.short(job.lastSuccess, now: now), color: job.dotColor)
+                           right: StatusText.short(status.reposLastBackedUp, now: now), color: job.dotColor)
                 }
                 .buttonStyle(.plain)
             }

@@ -541,6 +541,7 @@ private final class HelperWorld {
         let first = try macThenHelper(w, backup)
         #expect(first.repos.map(\.action) == [.onNAS])
         #expect(first.record.summary == "1 handled by the NAS helper")
+        #expect(first.record.counts.unchanged == 1)
         #expect(FileManager.default.fileExists(atPath: mirror.appending(path: "HEAD").path(percentEncoded: false)))
         #expect(try w.refs("refs/mac", in: mirror).isEmpty)
         GitHubBackup.applyHelperRun(try #require(try w.helper.lastRun()), config: config, store: store)

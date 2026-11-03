@@ -738,6 +738,7 @@ public final class GitHubBackup: @unchecked Sendable {
                 items.append(RunItem(action: .skipped, path: r.fullName, size: r.size, detail: r.reason))
             case .onNAS:
                 onNAS += 1
+                c.unchanged += 1
                 items.append(RunItem(action: .unchanged, path: r.fullName, size: r.size, detail: r.reason))
             }
         }
@@ -748,7 +749,7 @@ public final class GitHubBackup: @unchecked Sendable {
         }
         var summary: [String] = []
         if c.copied > 0 { summary.append("\(c.copied) \(dryRun ? "would be backed up" : "backed up")") }
-        if c.unchanged > 0 { summary.append("\(c.unchanged) unchanged") }
+        if c.unchanged > onNAS { summary.append("\(c.unchanged - onNAS) unchanged") }
         if onNAS > 0 { summary.append("\(onNAS) handled by the NAS helper") }
         if c.skipped > 0 { summary.append("\(c.skipped) skipped") }
         if c.failed > 0 { summary.append("\(c.failed) failed") }

@@ -41,6 +41,13 @@ import Testing
         #expect(StatusText.repoLine(s, lastRun: macRun(failed: 1), nextRun: nil) == "3 up to date · 1 failed · 1 waiting for a first backup")
     }
 
+    @Test func reposWithARemovedCloneAreNotCountedAsUpToDate() {
+        var s = snapshot(helper: helperRun(["unchanged", "unchanged", "unchanged", "skipped"]))
+        s.github?.problemRepos = [RepoProblem(fullName: "o/gone", source: .localClone, localPath: "/code/gone/", status: .missingLocally,
+                                              message: "gone", hasGitHubRemote: true)]
+        #expect(StatusText.repoLine(s, lastRun: macRun(), nextRun: nil) == "3 up to date · 1 clone removed · 1 skipped")
+    }
+
     @Test func helperRunInProgressSaysSo() {
         let s = snapshot(helper: helperRun(["unchanged"], status: "running"))
         #expect(StatusText.repoLine(s, lastRun: macRun(), nextRun: nil) == "The NAS is checking GitHub")

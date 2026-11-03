@@ -235,8 +235,10 @@ public enum StatusText {
             let failed = c.failed + (lastRun?.counts.failed ?? 0)
             let waiting = s.github?.waitingForMirror ?? 0
             let total = s.github?.repoCount ?? c.total
-            parts = ["\(max(0, total - failed - c.skipped - waiting)) up to date"]
+            let cloneGone = s.github?.problemRepos.filter { $0.status == .missingLocally }.count ?? 0
+            parts = ["\(max(0, total - failed - c.skipped - waiting - cloneGone)) up to date"]
             if failed > 0 { parts.append("\(failed) failed") }
+            if cloneGone > 0 { parts.append(cloneGone == 1 ? "1 clone removed" : "\(cloneGone) clones removed") }
             if waiting > 0 { parts.append("\(waiting) waiting for a first backup") }
             if c.skipped > 0 { parts.append("\(c.skipped) skipped") }
         } else {
